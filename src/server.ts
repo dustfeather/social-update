@@ -1,4 +1,6 @@
 import express from "express";
+import path from "path";
+import fs from "fs";
 import { config } from "dotenv";
 import db, { getDrafts } from "./db";
 import { generateDrafts } from "./generate";
@@ -88,6 +90,15 @@ function safeParse(s: string): unknown {
 }
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
+
+// Serve the built React SPA (web/dist) when present; SPA-fallback non-API routes.
+const WEB_DIST = path.join(__dirname, "..", "web", "dist");
+if (fs.existsSync(WEB_DIST)) {
+  app.use(express.static(WEB_DIST));
+  app.get(/^(?!\/api\/).*/, (_req, res) => res.sendFile(path.join(WEB_DIST, "index.html")));
+} else {
+  console.warn(`[server] ${WEB_DIST} not built — run "npm run build:web"; API still available.`);
+}
 
 app.listen(PORT, () => {
   console.log(`[server] listening on http://localhost:${PORT}`);

@@ -6,6 +6,8 @@
   "type": "commonjs",
   "scripts": {
     "build": "tsc",
+    "build:web": "npm --prefix web install && npm --prefix web run build",
+    "build:all": "npm run build && npm run build:web",
     "collect": "node dist/collect.js",
     "start": "node dist/server.js",
     "dev": "tsc --watch"
