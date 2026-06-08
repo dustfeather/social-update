@@ -1,6 +1,7 @@
 import express from "express";
 import { config } from "dotenv";
-import db from "./db";
+import db, { getDrafts } from "./db";
+import { generateDrafts } from "./generate";
 
 config();
 
@@ -46,6 +47,45 @@ app.get("/api/items", (req, res) => {
   const items = itemsStmt.all(week, limit, offset);
   res.json({ week, page, limit, total, items });
 });
+
+// Draft history for a week (output parsed back into card arrays).
+app.get("/api/drafts", (req, res) => {
+  const week = String(req.query.week ?? "");
+  if (!WEEK_RE.test(week)) {
+    return res.status(400).json({ error: "week must be in YYYY-Www format" });
+  }
+  const rows = getDrafts(week).map((r) => ({
+    id: r.id,
+    created_at: r.created_at,
+    iso_week: r.iso_week,
+    drafts: safeParse(r.output),
+  }));
+  res.json(rows);
+});
+
+// Generate drafts for a week from its items + optional manual text via the claude CLI.
+app.post("/api/generate", async (req, res) => {
+  const week = String(req.body?.week ?? "");
+  const manualText = String(req.body?.manualText ?? "");
+  if (!WEEK_RE.test(week)) {
+    return res.status(400).json({ error: "week must be in YYYY-Www format" });
+  }
+  try {
+    const result = await generateDrafts(week, manualText);
+    res.json(result);
+  } catch (err) {
+    console.error("[generate]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "generation failed" });
+  }
+});
+
+function safeParse(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return [];
+  }
+}
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 

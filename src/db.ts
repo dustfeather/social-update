@@ -94,4 +94,48 @@ export function insertItems(items: ItemInput[]): number {
   return tx(items);
 }
 
+// All items for a week, newest first — used to build the generation prompt.
+const weekItemsStmt = db.prepare(
+  `SELECT id, source, title, body, url, occurred_at
+     FROM items
+    WHERE iso_week = ?
+    ORDER BY occurred_at DESC`
+);
+export function getWeekItems(week: string): Array<{
+  id: number;
+  source: string;
+  title: string | null;
+  body: string | null;
+  url: string | null;
+  occurred_at: string | null;
+}> {
+  return weekItemsStmt.all(week) as any;
+}
+
+const insertDraftStmt = db.prepare(`
+  INSERT INTO drafts (created_at, iso_week, input_snapshot, prompt_used, output)
+  VALUES (@created_at, @iso_week, @input_snapshot, @prompt_used, @output)
+`);
+export function saveDraft(d: {
+  iso_week: string;
+  input_snapshot: string;
+  prompt_used: string;
+  output: string;
+}): number {
+  const res = insertDraftStmt.run({ created_at: new Date().toISOString(), ...d });
+  return Number(res.lastInsertRowid);
+}
+
+const draftsByWeekStmt = db.prepare(
+  `SELECT id, created_at, iso_week, output FROM drafts WHERE iso_week = ? ORDER BY created_at DESC`
+);
+export function getDrafts(week: string): Array<{
+  id: number;
+  created_at: string;
+  iso_week: string;
+  output: string;
+}> {
+  return draftsByWeekStmt.all(week) as any;
+}
+
 export default db;
