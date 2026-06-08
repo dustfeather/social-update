@@ -9,6 +9,22 @@ config();
 
 const GITHUB_USER = process.env.GITHUB_USER ?? "dustfeather";
 
+// Repos to drop from collection. Comma-separated "owner/repo" in GITHUB_EXCLUDE_REPOS;
+// a trailing "/*" matches a whole owner (e.g. "acme/*"). Matching is case-insensitive.
+const EXCLUDE_REPOS = (process.env.GITHUB_EXCLUDE_REPOS ?? "")
+  .split(",")
+  .map((s) => s.trim().toLowerCase())
+  .filter(Boolean);
+
+function isExcluded(repo: string | undefined): boolean {
+  if (!repo) return false;
+  const name = repo.toLowerCase();
+  return EXCLUDE_REPOS.some((pat) => {
+    if (pat.endsWith("/*")) return name.startsWith(pat.slice(0, -1)); // owner/*
+    return name === pat;
+  });
+}
+
 // Minimal shape of a GitHub event from /users/:user/events. Parsed defensively —
 // payloads vary by `type` and only a subset of fields is guaranteed present.
 interface GithubEvent {
@@ -109,6 +125,7 @@ export async function collectGithub(): Promise<number> {
   const rows: ItemInput[] = [];
   for (const e of events) {
     if (!e.id) continue; // need a stable external_id
+    if (isExcluded(e.repo?.name)) continue; // user-configured repo exclusions
     const s = summarize(e);
     if (!s) continue;
     rows.push({

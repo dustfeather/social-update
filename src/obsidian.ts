@@ -56,6 +56,9 @@ export async function collectObsidian(): Promise<number> {
     }
     // Cloud-only placeholder files read empty; nothing to capture.
     if (content.trim().length === 0) continue;
+    // Unfilled template notes (Templater/core-template) still carry `{{...}}`
+    // placeholders and empty sections — pure noise, skip them.
+    if (/\{\{[^}]*\}\}/.test(content)) continue;
 
     // contentHash makes dedup robust to OneDrive mtime drift: same path+content = one item.
     const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);
