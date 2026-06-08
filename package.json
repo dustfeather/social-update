@@ -1,0 +1,24 @@
+{
+  "name": "social-update",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local social journal — collect daily activity, generate copy-ready LinkedIn drafts.",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc",
+    "collect": "node dist/collect.js",
+    "start": "node dist/server.js",
+    "dev": "tsc --watch"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3"
+  }
+}
