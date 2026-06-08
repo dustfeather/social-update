@@ -4,6 +4,7 @@ import fs from "fs";
 import { config } from "dotenv";
 import db, { getDrafts } from "./db";
 import { generateDrafts } from "./generate";
+import { readEnvVar, writeEnvVar } from "./env-file";
 
 config();
 
@@ -88,6 +89,36 @@ function safeParse(s: string): unknown {
     return [];
   }
 }
+
+const parseList = (s: string) =>
+  s
+    .split(",")
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+// Distinct GitHub repos seen in collected items — the pick-list for the exclude UI.
+const githubReposStmt = db.prepare(
+  `SELECT DISTINCT json_extract(raw_json, '$.repo.name') AS name
+     FROM items
+    WHERE source = 'github' AND name IS NOT NULL
+    ORDER BY name`
+);
+app.get("/api/github-repos", (_req, res) => {
+  res.json((githubReposStmt.all() as { name: string }[]).map((r) => r.name));
+});
+
+// Collector settings backed by .env. GET reads the file (process.env is stale post-startup).
+app.get("/api/settings", (_req, res) => {
+  res.json({ excludeRepos: parseList(readEnvVar("GITHUB_EXCLUDE_REPOS")) });
+});
+
+// PUT persists to .env; applies on the next collection run (the collector is a separate process).
+app.put("/api/settings", (req, res) => {
+  const raw = req.body?.excludeRepos;
+  const list = Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : [];
+  writeEnvVar("GITHUB_EXCLUDE_REPOS", list.join(","));
+  res.json({ excludeRepos: list });
+});
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 

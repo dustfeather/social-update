@@ -32,6 +32,21 @@ async function walkMarkdown(dir: string, out: string[]): Promise<void> {
   }
 }
 
+// An unfilled template note has negligible content once frontmatter, headings,
+// empty checkboxes, bare bullets and {{...}} placeholders are stripped. This is
+// content-based, not a bare {{...}} match — real notes mention `${{ }}` (GitHub
+// Actions) or document `{{date}}` syntax and must NOT be skipped.
+const MIN_REAL_CONTENT = 20;
+function realContentLength(content: string): number {
+  return content
+    .replace(/^---\n[\s\S]*?\n---/, "") // frontmatter block
+    .replace(/^#{1,6}\s.*$/gm, "") // headings
+    .replace(/^[-*]\s*\[[ x]\]\s*$/gm, "") // empty checkboxes
+    .replace(/^[-*]\s*$/gm, "") // bare bullets
+    .replace(/\{\{[^}]*\}\}/g, "") // template placeholders
+    .replace(/\s+/g, "").length;
+}
+
 // First markdown heading, else the filename without extension.
 function deriveTitle(content: string, file: string): string {
   const m = content.match(/^#{1,6}\s+(.+)$/m);
@@ -56,9 +71,8 @@ export async function collectObsidian(): Promise<number> {
     }
     // Cloud-only placeholder files read empty; nothing to capture.
     if (content.trim().length === 0) continue;
-    // Unfilled template notes (Templater/core-template) still carry `{{...}}`
-    // placeholders and empty sections — pure noise, skip them.
-    if (/\{\{[^}]*\}\}/.test(content)) continue;
+    // Unfilled template notes are near-empty skeletons — pure noise, skip them.
+    if (realContentLength(content) < MIN_REAL_CONTENT) continue;
 
     // contentHash makes dedup robust to OneDrive mtime drift: same path+content = one item.
     const hash = crypto.createHash("sha256").update(content).digest("hex").slice(0, 16);

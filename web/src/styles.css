@@ -177,3 +177,68 @@ textarea {
   font: inherit;
   margin: 0;
 }
+
+.settings {
+  margin-top: 32px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.settings summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.repo-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  columns: 2;
+}
+
+.repo-list li {
+  padding: 2px 0;
+  break-inside: avoid;
+}
+
+.repo-list label {
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.patterns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.chip {
+  background: #2a2f3a;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 13px;
+}
+
+.chip button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 0 0 0 4px;
+  font-size: 14px;
+}
+
+.pattern-add {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.pattern-add input {
+  flex: 1;
+}

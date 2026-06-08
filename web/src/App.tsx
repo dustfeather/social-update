@@ -3,6 +3,9 @@ import {
   fetchWeeks,
   fetchItems,
   generate,
+  fetchGithubRepos,
+  fetchSettings,
+  saveSettings,
   type WeekRow,
   type Item,
   type Draft,
@@ -142,7 +145,97 @@ export default function App() {
           ))}
         </section>
       )}
+
+      <RepoSettings />
     </div>
+  );
+}
+
+// Manage the GitHub repo exclusion list (persisted to .env, applied on next collection).
+function RepoSettings() {
+  const [repos, setRepos] = useState<string[]>([]);
+  const [excluded, setExcluded] = useState<Set<string>>(new Set());
+  const [pattern, setPattern] = useState("");
+  const [status, setStatus] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([fetchGithubRepos(), fetchSettings()])
+      .then(([r, s]) => {
+        setRepos(r);
+        setExcluded(new Set(s.excludeRepos));
+      })
+      .catch(() => setStatus("failed to load settings"));
+  }, []);
+
+  function toggle(name: string) {
+    setExcluded((prev) => {
+      const next = new Set(prev);
+      next.has(name) ? next.delete(name) : next.add(name);
+      return next;
+    });
+    setStatus(null);
+  }
+
+  function addPattern() {
+    const p = pattern.trim();
+    if (!p) return;
+    setExcluded((prev) => new Set(prev).add(p));
+    setPattern("");
+    setStatus(null);
+  }
+
+  async function save() {
+    try {
+      await saveSettings([...excluded]);
+      setStatus("Saved — applies on the next collection run.");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : "save failed");
+    }
+  }
+
+  // Excluded entries that aren't in the known repo list (e.g. "owner/*" patterns).
+  const extraPatterns = [...excluded].filter((e) => !repos.includes(e));
+
+  return (
+    <details className="settings">
+      <summary>GitHub repo filter</summary>
+      <p className="hint">Checked repos are excluded from collection. Saved to .env; applied next run.</p>
+      <ul className="repo-list">
+        {repos.map((r) => (
+          <li key={r}>
+            <label>
+              <input type="checkbox" checked={excluded.has(r)} onChange={() => toggle(r)} /> {r}
+            </label>
+          </li>
+        ))}
+        {repos.length === 0 && <li className="hint">No GitHub repos collected yet.</li>}
+      </ul>
+
+      {extraPatterns.length > 0 && (
+        <div className="patterns">
+          {extraPatterns.map((p) => (
+            <span key={p} className="chip">
+              {p} <button onClick={() => toggle(p)}>×</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="pattern-add">
+        <input
+          value={pattern}
+          onChange={(e) => setPattern(e.target.value)}
+          placeholder="owner/* or owner/repo"
+          onKeyDown={(e) => e.key === "Enter" && addPattern()}
+        />
+        <button onClick={addPattern}>Add pattern</button>
+      </div>
+
+      <button className="generate" onClick={save}>
+        Save filter
+      </button>
+      {status && <p className="hint">{status}</p>}
+    </details>
   );
 }
 
