@@ -1,10 +1,14 @@
 import { collectGithub } from "./github";
+import { collectObsidian } from "./obsidian";
 
 // Single entry point for all collectors. Each is added as its slice lands.
 // Runs every collector independently so one failing source never blocks the rest.
 type Collector = { name: string; run: () => Promise<number> };
 
-const collectors: Collector[] = [{ name: "github", run: collectGithub }];
+const collectors: Collector[] = [
+  { name: "github", run: collectGithub },
+  { name: "obsidian", run: collectObsidian },
+];
 
 async function main() {
   let total = 0;
