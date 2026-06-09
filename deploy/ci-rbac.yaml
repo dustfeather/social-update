@@ -1,0 +1,94 @@
+# ONE-TIME, CLUSTER-ADMIN bootstrap. NOT applied by deploy.yml.
+#
+# deploy.yml runs IN-cluster on the `arc-df-social-update` ARC scale set and
+# authenticates with that runner pod's own ServiceAccount
+# (`arc-df-social-update-gha-rs-no-permission`, zero RBAC by design). This grants
+# exactly the namespaced writes the workflow performs in `social-update` — no more.
+#
+# Apply ONCE, as cluster-admin, together with the other one-time bootstrap:
+#   kubectl apply -f deploy/ci-rbac.yaml
+#   kubectl apply -f deploy/ghcr-pull-refresher/00-rbac.yaml
+#   # copy the GitHub App secret so the refresher can mint ghcr tokens here:
+#   kubectl get secret github-app-dustfeather -n arc-runners -o yaml \
+#     | sed 's/namespace: arc-runners/namespace: social-update/' \
+#     | kubectl apply -n social-update -f -
+#
+# RBAC (Role/RoleBinding/SA) and the App-secret copy are deliberately kept OUT of
+# CI: the runner SA never gets rbac-write or the App private key.
+#
+# Verify the runner SA name first (ARC release name == scale-set name):
+#   kubectl -n arc-runners get sa | grep social-update
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: social-update
+---
+# Cluster-scoped GET on the one namespace (deploy.yml does `get namespace || create`;
+# `get` honours resourceNames, `create` is intentionally NOT granted — the namespace
+# is pre-created above so the get short-circuits).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: social-update-ci-namespace-reader
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["social-update"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: social-update-ci-namespace-reader
+subjects:
+  - kind: ServiceAccount
+    name: arc-df-social-update-gha-rs-no-permission
+    namespace: arc-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: social-update-ci-namespace-reader
+---
+# Namespaced writes deploy.yml performs in social-update:
+#   secrets                -> social-update-secrets (CLAUDE_CODE_OAUTH_TOKEN)
+#   configmaps             -> nginx-tls-proxy, ghcr-pull-refresher-script
+#   services               -> social-update
+#   persistentvolumeclaims -> social-update-data
+#   apps/deployments       -> social-update, nginx-tls-proxy
+#   batch/cronjobs+jobs    -> ghcr-pull-refresher, ghcr-pull-refresher-bootstrap
+#   cert-manager certs     -> social-tls
+# `kubectl apply` = get then create-or-patch; jobs are immutable so the workflow
+# deletes+recreates the bootstrap job (hence delete on batch).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: social-update-ci-deployer
+  namespace: social-update
+rules:
+  - apiGroups: [""]
+    resources: ["secrets", "configmaps", "services", "persistentvolumeclaims"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "create", "update", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["cronjobs", "jobs"]
+    verbs: ["get", "list", "create", "update", "patch", "delete"]
+  - apiGroups: ["cert-manager.io"]
+    resources: ["certificates"]
+    verbs: ["get", "list", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: social-update-ci-deployer
+  namespace: social-update
+subjects:
+  - kind: ServiceAccount
+    name: arc-df-social-update-gha-rs-no-permission
+    namespace: arc-runners
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: social-update-ci-deployer

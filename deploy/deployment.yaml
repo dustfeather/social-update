@@ -1,0 +1,66 @@
+# App: Express API + static React UI + in-pod Claude CLI for Generate.
+# ${IMAGE} is substituted by `envsubst` in deploy.yml (SHA-tagged ghcr image).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: social-update
+  namespace: social-update
+  labels: { app: social-update }
+spec:
+  replicas: 1
+  # RWO PVC has a single writer; never run two pods at once during a rollout.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: social-update }
+  template:
+    metadata:
+      labels: { app: social-update }
+    spec:
+      # Pin to the node that holds the local-path PVC (and the tls-proxy).
+      nodeSelector:
+        kubernetes.io/hostname: acer-laptop
+      imagePullSecrets:
+        - name: ghcr-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001            # make the PVC group-writable by uid 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: social-update
+          image: "${IMAGE}"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false   # SQLite WAL/SHM write next to the DB on /data
+            capabilities: { drop: ["ALL"] }
+          ports:
+            - { name: http, containerPort: 4000 }
+          env:
+            - { name: PORT, value: "4000" }
+            - { name: DB_PATH, value: "/data/social.sqlite" }
+            # Non-interactive Claude auth for the Generate endpoint.
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: social-update-secrets
+                  key: CLAUDE_CODE_OAUTH_TOKEN
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits:   { cpu: "1", memory: "1Gi" }
+          readinessProbe:
+            httpGet: { path: /api/health, port: 4000 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: 4000 }
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          volumeMounts:
+            - { name: data, mountPath: /data }
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: social-update-data

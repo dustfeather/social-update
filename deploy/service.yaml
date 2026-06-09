@@ -1,0 +1,15 @@
+# In-cluster Service for the app. External access is via the nginx-tls-proxy's
+# hostPort 443 on acer-laptop (tls-proxy.yaml), which proxies here over HTTP.
+apiVersion: v1
+kind: Service
+metadata:
+  name: social-update
+  namespace: social-update
+  labels: { app: social-update }
+spec:
+  type: ClusterIP
+  selector: { app: social-update }
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000

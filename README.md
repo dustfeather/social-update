@@ -1,30 +1,42 @@
 # Social Journal
 
-Turn sporadic posting into a weekly habit. Daily collectors log your activity into a local
-SQLite DB; a local web UI generates copy-ready LinkedIn drafts on demand.
+Turn sporadic posting into a weekly habit. Daily collectors log your activity into a
+SQLite DB; a web UI generates copy-ready LinkedIn drafts on demand.
 
 **Nothing is auto-published.** No posting APIs — you copy/paste the drafts yourself. The
 Obsidian vault is read-only input; no journal note is ever written.
 
 ## How it works
 
+The DB + web UI + generation run on the k3s cluster (`https://social.itguys.ro`, WARP-only).
+The collectors stay on your machine (they need local `gh`, the Obsidian vault, and
+`~/.claude/projects`) and **push** what they find to the cluster over the WARP network:
+
 ```
-collectors ──► SQLite (items) ──► web UI ──► POST /api/generate ──► claude CLI ──► drafts
- github                                                                            (copy/paste)
- obsidian
- claude code
+ local machine                          │  k3s (social-update ns, acer-laptop)
+ ─────────────                          │  ────────────────────────────────────
+ collectors ──POST /api/ingest──────────┼──► Express ──► SQLite (/data PVC)
+  github   (INGEST_URL)                 │       ▲              │
+  obsidian                              │       │   web UI ──► POST /api/generate
+  claude code                           │       │              │
+                                        │       │     in-pod `claude` CLI ──► drafts
+ browser (WARP) ──https://social.itguys.ro──────┘                            (copy/paste)
 ```
 
 - **Collectors** map source records → `items` rows, deduped by `UNIQUE(source, external_id)`.
-- **Generate** sends a week's items + your manual notes + `prompt.txt` to the local `claude`
-  CLI, which returns a JSON array of drafts. Each generation is saved to `drafts`.
+  With `INGEST_URL` set they POST to `/api/ingest`; unset, they write a local DB (dev).
+- **Generate** sends a week's items + your manual notes + `prompt.txt` to the `claude` CLI
+  running **in the cluster pod** (auth via `CLAUDE_CODE_OAUTH_TOKEN`), which returns a JSON
+  array of drafts. Each generation is saved to `drafts`.
 
-## Prerequisites
+## Prerequisites (collector machine)
 
 - Node.js (run inside WSL).
-- Local **`claude` CLI**, authenticated (used by generation).
 - **`gh` CLI**, authenticated (the GitHub collector reuses its auth → includes private events).
 - `~/.claude/projects` present (Claude Code session logs).
+- WARP connected (so the collector can reach `INGEST_URL` on the cluster).
+
+The `claude` CLI is **no longer needed locally** — generation runs in the cluster pod.
 
 ## Setup
 
@@ -85,6 +97,59 @@ schtasks /Run    /TN "SocialJournalCollect"
 schtasks /Query  /TN "SocialJournalCollect"
 schtasks /Delete /TN "SocialJournalCollect" /F
 ```
+
+## Deployment (k3s)
+
+The app (DB + UI + generation) runs on the itguys k3s cluster, deployed by GitHub Actions
+(`.github/workflows/deploy.yml`) on push to `main`. The workflow runs on the in-cluster
+`arc-df-social-update` ARC runner and `kubectl apply`s `deploy/` using the runner SA.
+
+Exposure mirrors the cluster convention (e.g. `grafana.itguys.ro`): a per-app
+`nginx-tls-proxy` pinned to `acer-laptop` binds that node's `:443` and reverse-proxies to
+the app; a cert-manager `Certificate` (`social.itguys.ro`, DNS-01 via
+`letsencrypt-cloudflare`) provides TLS; a Cloudflare **DNS-only** A record
+`social.itguys.ro → 100.96.0.4` (acer Mesh IP) makes it reachable **only inside WARP**.
+SQLite lives on a node-local `local-path` PVC, so the app + proxy + PVC all pin to
+`acer-laptop`.
+
+### One-time bootstrap (cluster-admin)
+
+```bash
+# 1. Provision the ARC runner scale set for this repo. Clone a sibling's values
+#    (prebaked runner image + privileged dind for `docker build` + acer nodeSelector)
+#    and swap only the repo URL — siblings reuse the dustfeather App secret.
+helm -n arc-runners get values arc-df-uninsta -a | tail -n +2 > /tmp/vals.yaml
+sed -i 's#github.com/dustfeather/uninsta#github.com/dustfeather/social-update#' /tmp/vals.yaml
+helm -n arc-runners install arc-df-social-update \
+  oci://ghcr.io/actions/actions-runner-controller-charts/gha-runner-scale-set \
+  --version 0.14.1 -f /tmp/vals.yaml
+
+# 2. RBAC: namespace + runner-SA deploy grants + refresher SA/Role.
+kubectl apply -f deploy/ci-rbac.yaml
+kubectl apply -f deploy/ghcr-pull-refresher/00-rbac.yaml
+
+# 3. Copy the GitHub App secret so the refresher can mint ghcr pull tokens here.
+kubectl get secret github-app-dustfeather -n arc-runners -o yaml \
+  | sed 's/namespace: arc-runners/namespace: social-update/' \
+  | kubectl apply -n social-update -f -
+
+# 4. Actions secret for in-pod generation.
+gh secret set CLAUDE_CODE_OAUTH_TOKEN -R dustfeather/social-update
+
+# 5. Cloudflare DNS-only A record: social.itguys.ro -> 100.96.0.4 (proxied=false).
+```
+
+After that, every push to `main` builds the image (`ghcr.io/dustfeather/social-update`),
+refreshes the `ghcr-pull` credential, and applies the workload. The private image is pulled
+via `ghcr-pull`, kept fresh by the in-namespace `ghcr-pull-refresher` CronJob (GitHub App,
+no human PAT).
+
+### Pointing collectors at the cluster
+
+Set `INGEST_URL="https://social.itguys.ro"` in the collector machine's `.env`. The collectors
+then POST to `/api/ingest` instead of opening a local DB (no token — WARP is the gate). The
+`GITHUB_EXCLUDE_REPOS` filter is set in the UI and stored in the cluster DB; the collector
+reads it back via `GET /api/settings`.
 
 ## Data model
 

@@ -7,8 +7,10 @@ nothing auto-published — copy/paste only.
 **Audience:** Recruiters/peers in the user's LinkedIn network → drafts are professional,
 concrete, first-person, no buzzwords/hype.
 
-**Environment:** Runs in WSL on localhost. Needs local `claude` CLI, authenticated `gh` CLI,
-and `~/.claude/projects`. Not k3s.
+**Environment:** Originally WSL/localhost. **Migrated to k3s** (2026-06): DB + UI +
+generation run in-cluster (`social.itguys.ro`, WARP-only); collectors stay local and push to
+`/api/ingest`. See README "Deployment (k3s)". Collectors still need local `gh` +
+`~/.claude/projects`; the `claude` CLI now runs in the cluster pod.
 
 ---
 

@@ -1,0 +1,58 @@
+# Refreshes social-update/ghcr-pull every 30 min (App installation tokens last 1h).
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ghcr-pull-refresher
+  namespace: social-update
+spec:
+  schedule: "*/30 * * * *"
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 600
+      template:
+        spec:
+          serviceAccountName: ghcr-pull-refresher
+          restartPolicy: OnFailure
+          # Pin to acer-laptop: the wsl node has broken cross-node pod networking
+          # (can't reach CoreDNS), and this co-locates with the app it serves.
+          nodeSelector:
+            kubernetes.io/hostname: acer-laptop
+          containers:
+            - name: refresher
+              image: ghcr.io/dustfeather/ghcr-pull-refresher:latest
+              imagePullPolicy: IfNotPresent
+              command: ["/scripts/refresh.sh"]
+              env:
+                - { name: PULL_SECRET_NAMESPACE, value: "social-update" }
+                - { name: PULL_SECRET_NAME, value: "ghcr-pull" }
+              resources:
+                requests: { cpu: "10m", memory: "32Mi" }
+                limits:   { cpu: "100m", memory: "128Mi" }
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+                runAsGroup: 65532
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities: { drop: ["ALL"] }
+                seccompProfile: { type: RuntimeDefault }
+              volumeMounts:
+                - { name: script, mountPath: /scripts, readOnly: true }
+                - { name: app-secret, mountPath: /var/run/secrets/github-app, readOnly: true }
+                - { name: tmp, mountPath: /tmp }
+          volumes:
+            - name: script
+              configMap:
+                name: ghcr-pull-refresher-script
+                defaultMode: 0o555
+            - name: app-secret
+              secret:
+                secretName: github-app-dustfeather
+                defaultMode: 0o444
+            - name: tmp
+              emptyDir: {}

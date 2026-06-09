@@ -1,0 +1,21 @@
+# TLS cert for the Mesh hostname, issued by the cluster's letsencrypt-cloudflare
+# ClusterIssuer via DNS-01. Its solver selector covers the itguys.ro zone, so the
+# hostname must live under itguys.ro. cert-manager writes the social-tls Secret,
+# mounted by the nginx-tls-proxy.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: social-tls
+  namespace: social-update
+spec:
+  secretName: social-tls
+  duration: 2160h    # 90d
+  renewBefore: 720h  # 30d — auto-renew, no manual action
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  dnsNames:
+    - social.itguys.ro
+  issuerRef:
+    name: letsencrypt-cloudflare
+    kind: ClusterIssuer

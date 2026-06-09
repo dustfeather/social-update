@@ -1,0 +1,17 @@
+# SQLite lives on a single local-path volume. local-path is RWO + node-local +
+# WaitForFirstConsumer, so the volume binds to whichever node the first consumer
+# lands on. The app Deployment pins nodeSelector: acer-laptop so the pod and this
+# PV always co-locate — a reschedule to another node would otherwise see an empty
+# (new) volume. better-sqlite3 needs a real local filesystem (WAL mmap), which a
+# local-path hostPath provides; a networked RWX volume would be unsafe here.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: social-update-data
+  namespace: social-update
+spec:
+  accessModes: ["ReadWriteOnce"]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
