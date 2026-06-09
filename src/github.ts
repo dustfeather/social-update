@@ -1,7 +1,8 @@
 import { execFile } from "child_process";
 import { promisify } from "util";
 import { config } from "dotenv";
-import { insertItems, type ItemInput } from "./db";
+import { insertItems } from "./sink";
+import type { ItemInput } from "./db";
 
 const execFileAsync = promisify(execFile);
 
@@ -9,17 +10,35 @@ config();
 
 const GITHUB_USER = process.env.GITHUB_USER ?? "dustfeather";
 
-// Repos to drop from collection. Comma-separated "owner/repo" in GITHUB_EXCLUDE_REPOS;
-// a trailing "/*" matches a whole owner (e.g. "acme/*"). Matching is case-insensitive.
-const EXCLUDE_REPOS = (process.env.GITHUB_EXCLUDE_REPOS ?? "")
-  .split(",")
-  .map((s) => s.trim().toLowerCase())
-  .filter(Boolean);
+// Repos to drop from collection. Comma-separated "owner/repo"; a trailing "/*"
+// matches a whole owner (e.g. "acme/*"). Matching is case-insensitive.
+//
+// Source of the list: in the k3s split the UI writes it to the server DB, so the
+// collector reads it back via GET /api/settings (INGEST_URL). Pure-local, it comes
+// from the GITHUB_EXCLUDE_REPOS env var.
+async function getExcludeRepos(): Promise<string[]> {
+  const url = process.env.INGEST_URL;
+  if (url) {
+    try {
+      const res = await fetch(new URL("/api/settings", url));
+      if (res.ok) {
+        const j = (await res.json()) as { excludeRepos?: string[] };
+        return (j.excludeRepos ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+      }
+    } catch {
+      // network/server hiccup — fall back to the env var below rather than fail collection
+    }
+  }
+  return (process.env.GITHUB_EXCLUDE_REPOS ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
 
-function isExcluded(repo: string | undefined): boolean {
+function isExcluded(repo: string | undefined, exclude: string[]): boolean {
   if (!repo) return false;
   const name = repo.toLowerCase();
-  return EXCLUDE_REPOS.some((pat) => {
+  return exclude.some((pat) => {
     if (pat.endsWith("/*")) return name.startsWith(pat.slice(0, -1)); // owner/*
     return name === pat;
   });
@@ -123,11 +142,11 @@ async function fetchEvents(): Promise<GithubEvent[]> {
 }
 
 export async function collectGithub(): Promise<number> {
-  const events = await fetchEvents();
+  const [events, exclude] = await Promise.all([fetchEvents(), getExcludeRepos()]);
   const rows: ItemInput[] = [];
   for (const e of events) {
     if (!e.id) continue; // need a stable external_id
-    if (isExcluded(e.repo?.name)) continue; // user-configured repo exclusions
+    if (isExcluded(e.repo?.name, exclude)) continue; // user-configured repo exclusions
     const s = summarize(e);
     if (!s) continue;
     rows.push({

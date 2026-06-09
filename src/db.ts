@@ -1,18 +1,10 @@
 import Database from "better-sqlite3";
 import { config } from "dotenv";
-import os from "os";
 import path from "path";
 import { isoWeek } from "./week";
+import { expandHome } from "./paths";
 
 config();
-
-// dotenv does no shell expansion, so values like "~/x" or "$HOME/x" arrive literal.
-export function expandHome(p: string): string {
-  const home = os.homedir();
-  if (p === "~" || p.startsWith("~/")) return path.join(home, p.slice(1));
-  if (p === "$HOME" || p.startsWith("$HOME/")) return path.join(home, p.slice("$HOME".length));
-  return p;
-}
 
 const DB_PATH = expandHome(
   process.env.DB_PATH ?? path.join(__dirname, "..", "social.sqlite")
@@ -49,7 +41,27 @@ db.exec(`
   );
 
   CREATE INDEX IF NOT EXISTS idx_drafts_iso_week ON drafts(iso_week);
+
+  CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
 `);
+
+// Single source of truth for collector/UI settings (e.g. GITHUB_EXCLUDE_REPOS).
+// Lives in the DB so the remote UI and the local collector share one value.
+const getSettingStmt = db.prepare(`SELECT value FROM settings WHERE key = ?`);
+const setSettingStmt = db.prepare(
+  `INSERT INTO settings (key, value) VALUES (@key, @value)
+   ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+);
+export function getSetting(key: string): string {
+  const row = getSettingStmt.get(key) as { value: string } | undefined;
+  return row?.value ?? "";
+}
+export function setSetting(key: string, value: string): void {
+  setSettingStmt.run({ key, value });
+}
 
 // Shared insert path for every collector. Dedup via UNIQUE(source, external_id) + INSERT OR IGNORE.
 // iso_week is derived from occurred_at so late collection files items into the week they happened.

@@ -2,7 +2,9 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { config } from "dotenv";
-import { insertItems, expandHome, type ItemInput } from "./db";
+import { insertItems } from "./sink";
+import { expandHome } from "./paths";
+import type { ItemInput } from "./db";
 
 config();
 

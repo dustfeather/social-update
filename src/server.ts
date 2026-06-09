@@ -2,9 +2,8 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { config } from "dotenv";
-import db, { getDrafts } from "./db";
+import db, { getDrafts, insertItems, getSetting, setSetting, type ItemInput } from "./db";
 import { generateDrafts } from "./generate";
-import { readEnvVar, writeEnvVar } from "./env-file";
 
 config();
 
@@ -12,7 +11,9 @@ const PORT = Number(process.env.PORT ?? 4000);
 const WEEK_RE = /^\d{4}-W\d{2}$/;
 
 const app = express();
-app.use(express.json());
+// Collectors POST full GitHub event payloads (raw_json) in a batch — well over the
+// 100kb default. 32mb mirrors the collector's gh --paginate buffer ceiling.
+app.use(express.json({ limit: "32mb" }));
 
 // Prepared statements (reused across requests).
 const weeksStmt = db.prepare(
@@ -107,16 +108,33 @@ app.get("/api/github-repos", (_req, res) => {
   res.json((githubReposStmt.all() as { name: string }[]).map((r) => r.name));
 });
 
-// Collector settings backed by .env. GET reads the file (process.env is stale post-startup).
-app.get("/api/settings", (_req, res) => {
-  res.json({ excludeRepos: parseList(readEnvVar("GITHUB_EXCLUDE_REPOS")) });
+// Collector ingest. Collectors run locally but POST here (over the WARP network)
+// instead of opening the SQLite file directly — the DB lives in the cluster now.
+// Body: { items: ItemInput[] }. iso_week/collected_at are derived server-side.
+app.post("/api/ingest", (req, res) => {
+  const items = req.body?.items;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "body must be { items: ItemInput[] }" });
+  }
+  for (const it of items) {
+    if (!it || typeof it.source !== "string" || typeof it.external_id !== "string") {
+      return res.status(400).json({ error: "each item needs a string source and external_id" });
+    }
+  }
+  const inserted = insertItems(items as ItemInput[]);
+  res.json({ received: items.length, inserted });
 });
 
-// PUT persists to .env; applies on the next collection run (the collector is a separate process).
+// Collector settings, stored in the DB so the remote UI and the local collector
+// share one value (collector reads this back via GET on each run).
+app.get("/api/settings", (_req, res) => {
+  res.json({ excludeRepos: parseList(getSetting("GITHUB_EXCLUDE_REPOS")) });
+});
+
 app.put("/api/settings", (req, res) => {
   const raw = req.body?.excludeRepos;
   const list = Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : [];
-  writeEnvVar("GITHUB_EXCLUDE_REPOS", list.join(","));
+  setSetting("GITHUB_EXCLUDE_REPOS", list.join(","));
   res.json({ excludeRepos: list });
 });
 
