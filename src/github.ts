@@ -49,9 +49,11 @@ function summarize(e: GithubEvent): { title: string; body: string | null; url: s
       const commits: any[] = Array.isArray(p.commits) ? p.commits : [];
       const branch = String(p.ref ?? "").replace(/^refs\/heads\//, "");
       const n = commits.length || (typeof p.size === "number" ? p.size : 0);
+      // Zero-commit pushes (branch create/delete, force-push, no-op) carry no
+      // content — skip them rather than emit a hollow "Pushed commits" item.
+      if (n === 0) return null;
       const msgs = commits.map((c) => `- ${String(c?.message ?? "").split("\n")[0]}`).join("\n");
-      // The events feed often omits commit details, so n can be 0 — keep the title clean.
-      const count = n > 0 ? `${n} commit${n === 1 ? "" : "s"}` : "commits";
+      const count = `${n} commit${n === 1 ? "" : "s"}`;
       return {
         title: `Pushed ${count} to ${repoLabel}${branch ? ` (${branch})` : ""}`,
         body: msgs || null,
