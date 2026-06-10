@@ -71,10 +71,13 @@ rules:
     verbs: ["get", "list", "create", "update", "patch"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
-    verbs: ["get", "list", "create", "update", "patch"]
+    # watch: `kubectl rollout status` streams a watch on the deployment.
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
   - apiGroups: ["batch"]
     resources: ["cronjobs", "jobs"]
-    verbs: ["get", "list", "create", "update", "patch", "delete"]
+    # watch: `kubectl wait --for=condition=complete` watches the job when it
+    # isn't already complete on first get.
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "create", "update", "patch"]
