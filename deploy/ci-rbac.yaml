@@ -69,6 +69,10 @@ rules:
   - apiGroups: [""]
     resources: ["secrets", "configmaps", "services", "persistentvolumeclaims"]
     verbs: ["get", "list", "create", "update", "patch"]
+  # Read-only: the final "Show result" step runs `kubectl get pods,...`.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
   - apiGroups: ["apps"]
     resources: ["deployments"]
     # watch: `kubectl rollout status` streams a watch on the deployment.
