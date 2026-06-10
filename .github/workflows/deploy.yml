@@ -68,21 +68,6 @@ jobs:
             --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
             --dry-run=client -o yaml | kubectl apply -n social-update -f -
 
-      - name: Ensure ghcr-pull credential (GitHub App refresher)
-        run: |
-          # Private image pull without a human PAT: the refresher mints a ghcr token
-          # from the dustfeather GitHub App into social-update/ghcr-pull. Its SA/Role
-          # and the App secret copy are admin-bootstrapped (see deploy/ci-rbac.yaml).
-          # Apply the script + CronJob, then run the bootstrap Job NOW so ghcr-pull
-          # exists before the app Deployment pulls (a completed Job is immutable —
-          # delete then re-apply).
-          kubectl apply -n social-update -f deploy/ghcr-pull-refresher/10-script.yaml
-          kubectl apply -n social-update -f deploy/ghcr-pull-refresher/20-cronjob.yaml
-          kubectl delete job ghcr-pull-refresher-bootstrap -n social-update --ignore-not-found
-          kubectl apply -n social-update -f deploy/ghcr-pull-refresher/99-bootstrap-job.yaml
-          kubectl wait --for=condition=complete job/ghcr-pull-refresher-bootstrap \
-            -n social-update --timeout=120s
-
       - name: Apply storage, TLS, and Service
         run: |
           kubectl apply -n social-update -f deploy/pvc.yaml

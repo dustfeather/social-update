@@ -5,16 +5,11 @@
 # (`arc-df-social-update-gha-rs-no-permission`, zero RBAC by design). This grants
 # exactly the namespaced writes the workflow performs in `social-update` — no more.
 #
-# Apply ONCE, as cluster-admin, together with the other one-time bootstrap:
+# Apply ONCE, as cluster-admin:
 #   kubectl apply -f deploy/ci-rbac.yaml
-#   kubectl apply -f deploy/ghcr-pull-refresher/00-rbac.yaml
-#   # copy the GitHub App secret so the refresher can mint ghcr tokens here:
-#   kubectl get secret github-app-dustfeather -n arc-runners -o yaml \
-#     | sed 's/namespace: arc-runners/namespace: social-update/' \
-#     | kubectl apply -n social-update -f -
 #
-# RBAC (Role/RoleBinding/SA) and the App-secret copy are deliberately kept OUT of
-# CI: the runner SA never gets rbac-write or the App private key.
+# RBAC (Role/RoleBinding/SA) is deliberately kept OUT of CI: the runner SA never
+# gets rbac-write.
 #
 # Verify the runner SA name first (ARC release name == scale-set name):
 #   kubectl -n arc-runners get sa | grep social-update
@@ -52,14 +47,12 @@ roleRef:
 ---
 # Namespaced writes deploy.yml performs in social-update:
 #   secrets                -> social-update-secrets (CLAUDE_CODE_OAUTH_TOKEN)
-#   configmaps             -> nginx-tls-proxy, ghcr-pull-refresher-script
+#   configmaps             -> nginx-tls-proxy
 #   services               -> social-update
 #   persistentvolumeclaims -> social-update-data
 #   apps/deployments       -> social-update, nginx-tls-proxy
-#   batch/cronjobs+jobs    -> ghcr-pull-refresher, ghcr-pull-refresher-bootstrap
 #   cert-manager certs     -> social-tls
-# `kubectl apply` = get then create-or-patch; jobs are immutable so the workflow
-# deletes+recreates the bootstrap job (hence delete on batch).
+# `kubectl apply` = get then create-or-patch.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -77,11 +70,6 @@ rules:
     resources: ["deployments"]
     # watch: `kubectl rollout status` streams a watch on the deployment.
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  - apiGroups: ["batch"]
-    resources: ["cronjobs", "jobs"]
-    # watch: `kubectl wait --for=condition=complete` watches the job when it
-    # isn't already complete on first get.
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
   - apiGroups: ["cert-manager.io"]
     resources: ["certificates"]
     verbs: ["get", "list", "create", "update", "patch"]

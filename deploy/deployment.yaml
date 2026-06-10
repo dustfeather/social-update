@@ -20,8 +20,6 @@ spec:
       # Pin to the node that holds the local-path PVC (and the tls-proxy).
       nodeSelector:
         kubernetes.io/hostname: acer-laptop
-      imagePullSecrets:
-        - name: ghcr-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
