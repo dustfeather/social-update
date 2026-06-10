@@ -1,8 +1,8 @@
 # ---- builder: compile backend (tsc -> dist/) + frontend (vite -> web/dist) ----
-# build-essential + python3 are needed to compile better-sqlite3's native addon.
+# No native toolchain: SQLite is the built-in node:sqlite module, nothing to compile.
 FROM node:24-bookworm-slim AS builder
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends build-essential python3 ca-certificates \
+  && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
@@ -17,9 +17,8 @@ RUN npm run build
 COPY web ./web
 RUN npm --prefix web ci && npm --prefix web run build
 
-# Reduce the backend node_modules to prod-only. `npm ci` wipes + reinstalls, so
-# better-sqlite3's compiled .node is rebuilt here (build tools still present) and
-# devDependencies (typescript, @types) are dropped before the copy into runtime.
+# Reduce the backend node_modules to prod-only: drop devDependencies (typescript,
+# @types) before the copy into runtime. No native modules to rebuild.
 RUN npm ci --omit=dev
 
 # ---- runtime: node + prod deps + static UI + Claude CLI, no toolchain, non-root ----
@@ -44,7 +43,9 @@ COPY prompt.txt ./prompt.txt
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/agent agent \
   && mkdir -p /data \
   && chown -R 10001:10001 /data /home/agent
-ENV HOME=/home/agent NODE_ENV=production DB_PATH=/data/social.sqlite
+# node:sqlite is still flagged experimental; silence its one-line startup warning.
+ENV HOME=/home/agent NODE_ENV=production DB_PATH=/data/social.sqlite \
+    NODE_OPTIONS=--disable-warning=ExperimentalWarning
 USER 10001
 EXPOSE 4000
 CMD ["node", "dist/server.js"]

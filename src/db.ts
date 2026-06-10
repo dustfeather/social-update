@@ -1,4 +1,4 @@
-import Database from "better-sqlite3";
+import { DatabaseSync } from "node:sqlite";
 import { config } from "dotenv";
 import path from "path";
 import { isoWeek } from "./week";
@@ -10,9 +10,9 @@ const DB_PATH = expandHome(
   process.env.DB_PATH ?? path.join(__dirname, "..", "social.sqlite")
 );
 
-export const db = new Database(DB_PATH);
-db.pragma("journal_mode = WAL");
-db.pragma("foreign_keys = ON");
+export const db = new DatabaseSync(DB_PATH);
+db.exec("PRAGMA journal_mode = WAL");
+db.exec("PRAGMA foreign_keys = ON");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS items (
@@ -83,11 +83,13 @@ const insertStmt = db.prepare(`
 `);
 
 // Returns the number of rows actually inserted (duplicates ignored).
+// node:sqlite has no transaction() helper, so wrap the batch by hand.
 export function insertItems(items: ItemInput[]): number {
   const collected_at = new Date().toISOString();
-  const tx = db.transaction((rows: ItemInput[]): number => {
-    let inserted = 0;
-    for (const r of rows) {
+  let inserted = 0;
+  db.exec("BEGIN");
+  try {
+    for (const r of items) {
       const res = insertStmt.run({
         source: r.source,
         external_id: r.external_id,
@@ -99,11 +101,14 @@ export function insertItems(items: ItemInput[]): number {
         collected_at,
         raw_json: r.raw_json ?? null,
       });
-      inserted += res.changes;
+      inserted += Number(res.changes);
     }
-    return inserted;
-  });
-  return tx(items);
+    db.exec("COMMIT");
+  } catch (err) {
+    db.exec("ROLLBACK");
+    throw err;
+  }
+  return inserted;
 }
 
 // All items for a week, newest first — used to build the generation prompt.
