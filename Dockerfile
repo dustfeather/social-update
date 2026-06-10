@@ -1,6 +1,6 @@
 # ---- builder: compile backend (tsc -> dist/) + frontend (vite -> web/dist) ----
 # build-essential + python3 are needed to compile better-sqlite3's native addon.
-FROM node:26-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 RUN apt-get update \
   && apt-get install -y --no-install-recommends build-essential python3 ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -23,7 +23,7 @@ RUN npm --prefix web ci && npm --prefix web run build
 RUN npm ci --omit=dev
 
 # ---- runtime: node + prod deps + static UI + Claude CLI, no toolchain, non-root ----
-FROM node:26-bookworm-slim
+FROM node:24-bookworm-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
