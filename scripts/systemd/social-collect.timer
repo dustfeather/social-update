@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily social-update collection
+
+[Timer]
+OnCalendar=*-*-* 18:00:00
+# run after a missed window (WSL was down at 18:00) instead of silently skipping
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -76,27 +76,36 @@ npm --prefix web run dev     # vite dev server (proxies /api → :4000)
 
 ## Scheduling (daily collection)
 
-Windows Task Scheduler runs the collector daily — fires even with no WSL shell open. There is
-no in-WSL cron/systemd.
+The collector runs from a **WSL `systemd --user` timer** (`social-collect.timer`, daily at
+18:00). It calls a watchdog wrapper (`scripts/social-collect-watchdog.sh`, modeled on the WARP
+mesh watchdog) that probes ingest health, runs the collector, flags any failed source, and logs
+everything to journald. `Persistent=true` makes a missed run (WSL down at 18:00) fire on the
+next boot instead of being silently skipped.
 
-`scripts/collect-task.cmd` invokes the collector through a WSL login shell and logs to
-`collect.log`. Register it (run in **Windows** PowerShell/cmd, adjust the distro if needed):
+Install / update (run inside WSL from the repo root):
 
-```cmd
-schtasks /Create /TN "SocialJournalCollect" /SC DAILY /ST 18:00 /F ^
-  /TR "wsl.exe -d Ubuntu-24.04 -- bash -lic \"cd ~/projects/social-update && node dist/collect.js >> collect.log 2>&1\""
+```bash
+scripts/install-collector-systemd.sh
 ```
 
-Or point the task at the committed script via its WSL path:
-`\\wsl$\Ubuntu-24.04\home\<you>\projects\social-update\scripts\collect-task.cmd`.
+Inspect:
 
-Verify / remove:
-
-```cmd
-schtasks /Run    /TN "SocialJournalCollect"
-schtasks /Query  /TN "SocialJournalCollect"
-schtasks /Delete /TN "SocialJournalCollect" /F
+```bash
+systemctl --user list-timers social-collect.timer   # next/last fire
+systemctl --user start social-collect.service        # run now
+journalctl --user -t social-collect -n 30            # run logs
 ```
+
+> Requires `systemd=true` in `/etc/wsl.conf` and `loginctl enable-linger` (the installer sets
+> linger). The unit files live under `scripts/systemd/` so they're version-controlled and can't
+> silently disappear the way the old Windows Scheduled Task did.
+
+### Legacy: Windows Task Scheduler (deprecated)
+
+`scripts/collect-task.cmd` + a `SocialJournalCollect` task was the old mechanism. It is
+**disabled** in favor of the systemd timer (avoid running both — harmless duplicate inserts via
+the dedup constraint, but confusing). To fall back: `schtasks /Change /TN "SocialJournalCollect"
+/ENABLE` and disable the systemd timer with `systemctl --user disable --now social-collect.timer`.
 
 ## Deployment (k3s)
 
