@@ -10,7 +10,9 @@
     "build:all": "npm run build && npm run build:web",
     "collect": "node dist/collect.js",
     "start": "node dist/server.js",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

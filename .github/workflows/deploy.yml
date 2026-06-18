@@ -19,7 +19,13 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  tests:
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v4
+    with:
+      runner: arc-df-social-update
+
   deploy:
+    needs: tests
     runs-on: arc-df-social-update
     permissions:
       contents: read
