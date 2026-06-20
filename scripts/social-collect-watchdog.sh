@@ -26,9 +26,10 @@ export DISPLAY="${DISPLAY:-:0}"
 envval() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
 
 # If CLAUDE_CDP_URL is set, make sure a logged-in Chrome is listening on that
-# port before collecting. The service runs with KillMode=process, so a Chrome we
-# launch survives between daily runs (keeping its Cloudflare clearance + login —
-# only the first run, or a re-login, needs a human to pass Turnstile once).
+# port before collecting. If WE have to launch it, we also close the whole
+# browser when the run ends (see the EXIT trap below) instead of leaving a window
+# open. Trade-off: each run that launches Chrome re-hits Cloudflare Turnstile, so
+# the profile must already hold a valid login/clearance for it to pass unattended.
 CDP="$(envval CLAUDE_CDP_URL)"
 if [ -n "$CDP" ]; then
   PORT="${CDP##*:}"
@@ -39,7 +40,12 @@ if [ -n "$CDP" ]; then
     echo "claude-web: starting $CHROME on :$PORT (profile $PROFILE)"
     setsid "$CHROME" --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
       --no-first-run --no-default-browser-check >/tmp/social-collect-chrome.log 2>&1 &
+    CHROME_LEADER=$!   # setsid makes this the session/process-group leader
     disown 2>/dev/null || true
+    # Close the entire browser (not just the claude-web tab) when this run ends,
+    # on ANY exit path. Negative PID targets the whole process group. Guarded so
+    # we only ever kill a Chrome WE launched, never one the user already had open.
+    trap 'if [ -n "${CHROME_LEADER:-}" ]; then echo "claude-web: closing collector Chrome"; kill -- -"$CHROME_LEADER" 2>/dev/null || kill "$CHROME_LEADER" 2>/dev/null; fi' EXIT
     for _ in $(seq 1 20); do
       curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/json/version" && break
       sleep 1

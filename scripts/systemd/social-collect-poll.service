@@ -6,6 +6,5 @@ After=network-online.target
 Type=oneshot
 ExecStart=/bin/bash -lc '%h/.local/bin/social-collect-poll.sh'
 SyslogIdentifier=social-collect-poll
-# The watchdog this invokes may launch a CDP Chrome for claude-web; keep it alive
-# between runs (default control-group kill would reap it when the oneshot exits).
-KillMode=process
+# The watchdog closes the CDP Chrome it launches at the end of each run, so no
+# KillMode override is needed — default control-group cleanup is a fine backstop.
