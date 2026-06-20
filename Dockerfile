@@ -6,6 +6,10 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
+# The web collector's Playwright dep is only run on the local collector box,
+# never in the cluster server — skip its ~150MB browser download in the image.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+
 # Backend deps (full, incl. tsc) + compile.
 COPY package.json package-lock.json ./
 RUN npm ci
@@ -37,6 +41,8 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/web/dist ./web/dist
 COPY prompt.txt ./prompt.txt
+
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
 # Non-root (matches runAsUser: 10001 in deploy/deployment.yaml). /data is the
 # SQLite PVC mount; HOME must be writable for the Claude CLI's config/cache.

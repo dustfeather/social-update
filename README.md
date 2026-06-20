@@ -52,7 +52,7 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 |-----|---------|
 | `VAULT_PATH` | Obsidian vault root (read-only). `~` and `$HOME` are expanded; quote paths with spaces. |
 | `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). |
-| `CLAUDE_SESSION_KEY` | `sessionKey` cookie from a logged-in claude.ai session, used to collect web conversations. Unset = web collection skipped. |
+| `CLAUDE_CDP_URL` | CDP endpoint of a real Chrome you run (e.g. `http://localhost:9222`), used to collect claude.ai web conversations. Cloudflare Turnstile blocks automated browsers, so the collector attaches to your genuine, logged-in session instead. Unset = web collection skipped. See below. |
 | `CLAUDE_WEB_BASE` | claude.ai API base (default `https://claude.ai`). Rarely changed. |
 | `GITHUB_USER` | GitHub username whose events the collector reads (via authed `gh`). |
 | `GITHUB_EXCLUDE_REPOS` | Comma-separated `owner/repo` to drop from collection; trailing `/*` excludes a whole owner. Empty = none. Editable from the UI ("GitHub repo filter" panel) — saved here, applied on the next collection run. |
@@ -101,6 +101,33 @@ journalctl --user -t social-collect -n 30            # run logs
 > Requires `systemd=true` in `/etc/wsl.conf` and `loginctl enable-linger` (the installer sets
 > linger). The unit files live under `scripts/systemd/` so they're version-controlled and can't
 > silently disappear the way the old Windows Scheduled Task did.
+
+### claude.ai web conversations (CDP browser)
+
+The `claude-web` collector pulls your claude.ai chat history. There is no public
+API for it (the Anthropic API is stateless), and claude.ai's Cloudflare Turnstile
+blocks every automated browser — headless, headful, and stealth-patched all loop
+on the "verify you are human" challenge. So the collector **attaches over CDP to a
+real Chrome you keep running and have logged into** (Cloudflare clears normally for
+a genuine human-driven browser).
+
+One-time setup — start a dedicated Chrome with a debug port and log in:
+
+```bash
+chromium --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.cache/social-update/chrome-profile" &
+# in that window: go to https://claude.ai, solve Turnstile once, log in
+```
+
+Then set `CLAUDE_CDP_URL="http://localhost:9222"` in `.env`. Leave that Chrome
+running; the collector connects to it each run, executes the internal API calls as
+same-origin `fetch()` in your genuine session, and never closes your browser. Unset
+`CLAUDE_CDP_URL` to skip web collection entirely. The login session lasts weeks;
+re-log when the collector starts reporting auth failures.
+
+> For the unattended daily timer this means keeping that Chrome instance alive
+> (and `DISPLAY` available under WSLg). If the debug browser is down at collect
+> time, `claude-web` reports FAILED in journald and the other sources still run.
 
 ### Legacy: Windows Task Scheduler (deprecated)
 
