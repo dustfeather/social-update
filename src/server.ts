@@ -11,6 +11,7 @@ import db, {
   claimNextRun,
   finishRun,
   latestRun,
+  setItemIgnored,
   type ItemInput,
 } from "./db";
 import { generateDrafts } from "./generate";
@@ -34,7 +35,7 @@ const weeksStmt = db.prepare(
     ORDER BY iso_week DESC`
 );
 const itemsStmt = db.prepare(
-  `SELECT id, source, external_id, title, body, url, occurred_at, iso_week, collected_at
+  `SELECT id, source, external_id, title, body, url, occurred_at, iso_week, collected_at, ignored
      FROM items
     WHERE iso_week = ?
     ORDER BY occurred_at DESC
@@ -60,6 +61,16 @@ app.get("/api/items", (req, res) => {
   const total = (itemsCountStmt.get(week) as { total: number }).total;
   const items = itemsStmt.all(week, limit, offset);
   res.json({ week, page, limit, total, items });
+});
+
+// Toggle an item's ignored flag. Ignored items stay tracked but are excluded
+// from draft generation.
+app.patch("/api/items/:id/ignore", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "id must be an integer" });
+  const ignored = req.body?.ignored === true;
+  if (!setItemIgnored(id, ignored)) return res.status(404).json({ error: "item not found" });
+  res.json({ id, ignored });
 });
 
 // Draft history for a week (output parsed back into card arrays).

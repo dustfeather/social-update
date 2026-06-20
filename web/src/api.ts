@@ -13,6 +13,7 @@ export interface Item {
   url: string | null;
   occurred_at: string | null;
   iso_week: string | null;
+  ignored: number;
 }
 
 export interface ItemsPage {
@@ -77,6 +78,17 @@ export async function requestCollect(): Promise<{ run: CollectRun; alreadyActive
 }
 
 export const fetchCollectStatus = () => getJson<{ run: CollectRun | null }>("/api/collect/status");
+
+// Mark an item ignored (excluded from draft generation) or restore it.
+export async function setItemIgnored(id: number, ignored: boolean): Promise<{ id: number; ignored: boolean }> {
+  const res = await fetch(`/api/items/${id}/ignore`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ignored }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `ignore failed (${res.status})`);
+  return res.json();
+}
 
 export async function generate(week: string, manualText: string): Promise<{ draftId: number; drafts: Draft[] }> {
   const res = await fetch("/api/generate", {

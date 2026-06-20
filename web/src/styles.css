@@ -89,11 +89,23 @@ button:disabled {
 
 .items li {
   display: grid;
-  grid-template-columns: 80px 1fr auto;
+  grid-template-columns: 80px 1fr auto auto;
   gap: 10px;
   align-items: baseline;
   padding: 6px 0;
   border-bottom: 1px solid var(--border);
+}
+
+/* Ignored items stay visible but dimmed + struck, signalling they won't reach drafts. */
+.item-ignored .item-title,
+.item-ignored .item-date {
+  opacity: 0.45;
+  text-decoration: line-through;
+}
+
+.item-ignore {
+  font-size: 12px;
+  padding: 2px 8px;
 }
 
 .tag {

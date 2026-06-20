@@ -8,6 +8,7 @@ import {
   saveSettings,
   requestCollect,
   fetchCollectStatus,
+  setItemIgnored,
   type WeekRow,
   type Item,
   type Draft,
@@ -70,6 +71,19 @@ export default function App() {
     }
   }
 
+  // Toggle an item's ignored flag (optimistic; reverts on failure). Ignored items
+  // stay listed but are excluded from draft generation.
+  async function toggleIgnore(it: Item) {
+    const next = it.ignored ? 0 : 1;
+    setItems((prev) => prev.map((p) => (p.id === it.id ? { ...p, ignored: next } : p)));
+    try {
+      await setItemIgnored(it.id, next === 1);
+    } catch (e) {
+      setItems((prev) => prev.map((p) => (p.id === it.id ? { ...p, ignored: it.ignored } : p)));
+      setError(e instanceof Error ? e.message : "ignore failed");
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   return (
@@ -97,7 +111,7 @@ export default function App() {
         </h2>
         <ul>
           {items.map((it) => (
-            <li key={it.id}>
+            <li key={it.id} className={it.ignored ? "item-ignored" : undefined}>
               <span className={`tag tag-${it.source}`}>{it.source}</span>
               <span className="item-title">
                 {it.url ? (
@@ -109,6 +123,13 @@ export default function App() {
                 )}
               </span>
               <span className="item-date">{it.occurred_at?.slice(0, 10)}</span>
+              <button
+                className="item-ignore"
+                onClick={() => toggleIgnore(it)}
+                title={it.ignored ? "Restore — include in drafts" : "Ignore — exclude from drafts"}
+              >
+                {it.ignored ? "Restore" : "Ignore"}
+              </button>
             </li>
           ))}
         </ul>

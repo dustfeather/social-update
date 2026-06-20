@@ -61,6 +61,16 @@ db.exec(`
   );
 `);
 
+// Migration: per-item "ignored" flag. Ignored items stay tracked (so collectors
+// don't re-pull them via UNIQUE(source, external_id)) but the draft generator
+// skips them. Guarded ALTER — ADD COLUMN throws if the column already exists.
+{
+  const cols = db.prepare("PRAGMA table_info(items)").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === "ignored")) {
+    db.exec("ALTER TABLE items ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0");
+  }
+}
+
 // Single source of truth for collector/UI settings (e.g. GITHUB_EXCLUDE_REPOS).
 // Lives in the DB so the remote UI and the local collector share one value.
 const getSettingStmt = db.prepare(`SELECT value FROM settings WHERE key = ?`);
@@ -124,11 +134,12 @@ export function insertItems(items: ItemInput[]): number {
   return inserted;
 }
 
-// All items for a week, newest first — used to build the generation prompt.
+// All NON-ignored items for a week, newest first — used to build the generation
+// prompt. Ignored items are deliberately excluded so they never reach the draft.
 const weekItemsStmt = db.prepare(
   `SELECT id, source, title, body, url, occurred_at
      FROM items
-    WHERE iso_week = ?
+    WHERE iso_week = ? AND ignored = 0
     ORDER BY occurred_at DESC`
 );
 export function getWeekItems(week: string): Array<{
@@ -140,6 +151,13 @@ export function getWeekItems(week: string): Array<{
   occurred_at: string | null;
 }> {
   return weekItemsStmt.all(week) as any;
+}
+
+// Toggle a single item's ignored flag. Returns true if a row was updated.
+const setIgnoredStmt = db.prepare(`UPDATE items SET ignored = @ignored WHERE id = @id`);
+export function setItemIgnored(id: number, ignored: boolean): boolean {
+  const res = setIgnoredStmt.run({ id, ignored: ignored ? 1 : 0 });
+  return Number(res.changes) > 0;
 }
 
 const insertDraftStmt = db.prepare(`
