@@ -33,6 +33,7 @@ CDP="$(envval CLAUDE_CDP_URL)"
 if [ -n "$CDP" ]; then
   PORT="${CDP##*:}"
   PROFILE="$(envval CLAUDE_CHROME_PROFILE)"; PROFILE="${PROFILE:-$HOME/.cache/social-update/chrome-profile}"
+  PROFILE="$(eval echo "$PROFILE")" # expand $HOME/~ (envval greps, doesn't source)
   if ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
     CHROME="$(command -v chromium || command -v chromium-browser || command -v google-chrome || echo /snap/bin/chromium)"
     echo "claude-web: starting $CHROME on :$PORT (profile $PROFILE)"
