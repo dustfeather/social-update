@@ -52,6 +52,8 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 |-----|---------|
 | `VAULT_PATH` | Obsidian vault root (read-only). `~` and `$HOME` are expanded; quote paths with spaces. |
 | `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). |
+| `CLAUDE_SESSION_KEY` | `sessionKey` cookie from a logged-in claude.ai session, used to collect web conversations. Unset = web collection skipped. |
+| `CLAUDE_WEB_BASE` | claude.ai API base (default `https://claude.ai`). Rarely changed. |
 | `GITHUB_USER` | GitHub username whose events the collector reads (via authed `gh`). |
 | `GITHUB_EXCLUDE_REPOS` | Comma-separated `owner/repo` to drop from collection; trailing `/*` excludes a whole owner. Empty = none. Editable from the UI ("GitHub repo filter" panel) — saved here, applied on the next collection run. |
 | `PORT` | Web server port (default 4000). |

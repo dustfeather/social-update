@@ -1,6 +1,7 @@
 import { collectGithub } from "./github";
 import { collectObsidian } from "./obsidian";
 import { collectClaude } from "./claude";
+import { collectClaudeWeb } from "./claude-web";
 
 // Single entry point for all collectors. Each is added as its slice lands.
 // Runs every collector independently so one failing source never blocks the rest.
@@ -10,6 +11,7 @@ const collectors: Collector[] = [
   { name: "github", run: collectGithub },
   { name: "obsidian", run: collectObsidian },
   { name: "claude", run: collectClaude },
+  { name: "claude-web", run: collectClaudeWeb },
 ];
 
 async function main() {

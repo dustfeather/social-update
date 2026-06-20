@@ -13,7 +13,8 @@ const MAX_BODY = 4000;
 const MAX_TITLE = 120;
 
 // Extract plain text from a message.content that may be a string or a block array.
-function firstText(content: unknown): string {
+// Shared with the claude.ai web collector (./claude-web).
+export function firstText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     const block = content.find(
@@ -25,7 +26,7 @@ function firstText(content: unknown): string {
 }
 
 // A genuine typed prompt — not a slash-command wrapper, caveat block, or tool result.
-function isRealPrompt(text: string): boolean {
+export function isRealPrompt(text: string): boolean {
   const t = text.trim();
   if (!t) return false;
   // Command/caveat/system wrappers are XML-ish and start with "<".
