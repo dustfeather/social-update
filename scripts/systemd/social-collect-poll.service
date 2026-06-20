@@ -1,0 +1,11 @@
+[Unit]
+Description=Social-update collection poller (claims UI/timer-triggered runs)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash -lc '%h/.local/bin/social-collect-poll.sh'
+SyslogIdentifier=social-collect-poll
+# The watchdog this invokes may launch a CDP Chrome for claude-web; keep it alive
+# between runs (default control-group kill would reap it when the oneshot exits).
+KillMode=process

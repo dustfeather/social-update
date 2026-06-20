@@ -2,7 +2,17 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import { config } from "dotenv";
-import db, { getDrafts, insertItems, getSetting, setSetting, type ItemInput } from "./db";
+import db, {
+  getDrafts,
+  insertItems,
+  getSetting,
+  setSetting,
+  enqueueRun,
+  claimNextRun,
+  finishRun,
+  latestRun,
+  type ItemInput,
+} from "./db";
 import { generateDrafts } from "./generate";
 
 config();
@@ -137,6 +147,43 @@ app.put("/api/settings", (req, res) => {
   setSetting("GITHUB_EXCLUDE_REPOS", list.join(","));
   res.json({ excludeRepos: list });
 });
+
+// --- Manual collection trigger ----------------------------------------------
+// Collectors run on the local WSL box (they need its browser/vault/CLIs), so the
+// UI can't run them directly. Instead a run is enqueued here and the local poller
+// (GET /api/collect/next) claims it, runs the watchdog, and reports back.
+
+// Enqueue a run from the UI button (source=manual) or the daily timer (source=daily).
+// Single-flight: a second request while one is pending/running returns 409 with the
+// active run so the button can show "already running" instead of stacking passes.
+app.post("/api/collect", (req, res) => {
+  const source = req.body?.source === "daily" ? "daily" : "manual";
+  const { run, alreadyActive } = enqueueRun(source);
+  res.status(alreadyActive ? 409 : 202).json({ run, alreadyActive });
+});
+
+// Local poller claims the oldest pending run. 204 when nothing is queued.
+app.post("/api/collect/next", (_req, res) => {
+  const run = claimNextRun();
+  if (!run) return res.status(204).end();
+  res.json({ run });
+});
+
+// Local poller reports the outcome of a claimed run.
+app.post("/api/collect/:id/done", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "id must be an integer" });
+  const inserted = req.body?.inserted;
+  const error = req.body?.error;
+  finishRun(id, {
+    inserted: typeof inserted === "number" ? inserted : undefined,
+    error: typeof error === "string" && error ? error : undefined,
+  });
+  res.json({ ok: true });
+});
+
+// Latest run — drives the button state and the completion notification.
+app.get("/api/collect/status", (_req, res) => res.json({ run: latestRun() }));
 
 app.get("/api/health", (_req, res) => res.json({ ok: true }));
 

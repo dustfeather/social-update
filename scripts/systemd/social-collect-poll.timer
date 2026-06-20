@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll for social-update collection requests every few seconds
+
+[Timer]
+# Start shortly after boot, then poll every 5s. AccuracySec=1s is required — the
+# default 1min accuracy would coalesce the 5s interval up to a minute.
+OnBootSec=30s
+OnUnitActiveSec=5s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

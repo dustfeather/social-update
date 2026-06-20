@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchWeeks,
   fetchItems,
@@ -6,9 +6,12 @@ import {
   fetchGithubRepos,
   fetchSettings,
   saveSettings,
+  requestCollect,
+  fetchCollectStatus,
   type WeekRow,
   type Item,
   type Draft,
+  type CollectRun,
 } from "./api";
 
 const PAGE_SIZE = 25;
@@ -83,6 +86,7 @@ export default function App() {
             ))}
           </select>
         </label>
+        <CollectButton />
       </header>
 
       {error && <div className="error">{error}</div>}
@@ -148,6 +152,79 @@ export default function App() {
 
       <RepoSettings />
     </div>
+  );
+}
+
+// "Collect now" — enqueues a run on the server; the local poller on the WSL box
+// picks it up and runs the collectors. Polls the run's status and pops a
+// completion notification when the run we triggered finishes.
+function CollectButton() {
+  const [run, setRun] = useState<CollectRun | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const trackedId = useRef<number | null>(null); // run we're watching to completion
+  const notifiedId = useRef<number | null>(null); // last run we've notified about
+
+  const active = run?.status === "pending" || run?.status === "running";
+
+  // Poll the latest run: fast (5s) while one is active or we're tracking a click,
+  // slow (30s) otherwise just to keep the button state honest across timer runs.
+  useEffect(() => {
+    let alive = true;
+    async function tick() {
+      try {
+        const { run: latest } = await fetchCollectStatus();
+        if (!alive) return;
+        setRun(latest);
+        if (
+          latest &&
+          latest.id === trackedId.current &&
+          (latest.status === "done" || latest.status === "error") &&
+          notifiedId.current !== latest.id
+        ) {
+          notifiedId.current = latest.id;
+          trackedId.current = null;
+          setNotice(
+            latest.status === "done"
+              ? `Collection finished — ${latest.inserted ?? 0} new item${latest.inserted === 1 ? "" : "s"}.`
+              : `Collection failed — ${latest.error ?? "unknown error"}`
+          );
+        }
+      } catch {
+        /* transient — next tick retries */
+      }
+    }
+    tick();
+    const fast = active || trackedId.current != null;
+    const id = setInterval(tick, fast ? 5000 : 30000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, [active]);
+
+  async function onClick() {
+    setNotice(null);
+    try {
+      const { run: r } = await requestCollect();
+      notifiedId.current = null;
+      trackedId.current = r.id; // also covers the 409 "already active" run
+      setRun(r); // pending/running → flips polling to fast
+    } catch (e) {
+      setNotice(e instanceof Error ? e.message : "collect failed");
+    }
+  }
+
+  return (
+    <span className="collect">
+      <button className="collect-btn" onClick={onClick} disabled={active}>
+        {active ? "Collecting…" : "Collect now"}
+      </button>
+      {notice && (
+        <span className="collect-notice">
+          {notice} <button className="collect-dismiss" onClick={() => setNotice(null)}>×</button>
+        </span>
+      )}
+    </span>
   );
 }
 

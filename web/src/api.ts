@@ -53,6 +53,31 @@ export async function saveSettings(excludeRepos: string[]): Promise<{ excludeRep
   return res.json();
 }
 
+export interface CollectRun {
+  id: number;
+  status: "pending" | "running" | "done" | "error";
+  source: "manual" | "daily";
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  inserted: number | null;
+  error: string | null;
+}
+
+// Enqueue a collection run. 409 (single-flight) is not an error here — it means a
+// run is already active; we return it so the caller can track that one instead.
+export async function requestCollect(): Promise<{ run: CollectRun; alreadyActive: boolean }> {
+  const res = await fetch("/api/collect", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ source: "manual" }),
+  });
+  if (res.status === 202 || res.status === 409) return res.json();
+  throw new Error((await res.json().catch(() => ({}))).error ?? `collect failed (${res.status})`);
+}
+
+export const fetchCollectStatus = () => getJson<{ run: CollectRun | null }>("/api/collect/status");
+
 export async function generate(week: string, manualText: string): Promise<{ draftId: number; drafts: Draft[] }> {
   const res = await fetch("/api/generate", {
     method: "POST",

@@ -250,3 +250,31 @@ textarea {
 .pattern-add input {
   flex: 1;
 }
+
+.collect {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.collect-btn {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.collect-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.collect-notice {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.collect-dismiss {
+  padding: 0 6px;
+  line-height: 1;
+}

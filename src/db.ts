@@ -46,6 +46,19 @@ db.exec(`
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+
+  -- One row per collection run requested from the UI button or the daily timer.
+  -- The local poller claims a pending row, runs the watchdog, then reports back.
+  CREATE TABLE IF NOT EXISTS collect_runs (
+    id           INTEGER PRIMARY KEY,
+    status       TEXT NOT NULL,        -- pending | running | done | error
+    source       TEXT NOT NULL,        -- manual | daily
+    requested_at TEXT NOT NULL,
+    started_at   TEXT,
+    finished_at  TEXT,
+    inserted     INTEGER,
+    error        TEXT
+  );
 `);
 
 // Single source of truth for collector/UI settings (e.g. GITHUB_EXCLUDE_REPOS).
@@ -153,6 +166,94 @@ export function getDrafts(week: string): Array<{
   output: string;
 }> {
   return draftsByWeekStmt.all(week) as any;
+}
+
+// --- Collection run queue (UI button + daily timer → local poller) ----------
+export interface CollectRun {
+  id: number;
+  status: "pending" | "running" | "done" | "error";
+  source: "manual" | "daily";
+  requested_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  inserted: number | null;
+  error: string | null;
+}
+
+// A claimed run that never reports is a dead poller; an unclaimed run means no
+// poller is running at all. Reclaim both to 'error' so single-flight can't wedge.
+const RUNNING_STALE_MS = 15 * 60_000;
+const PENDING_STALE_MS = 30 * 60_000;
+
+const activeRunStmt = db.prepare(
+  `SELECT * FROM collect_runs WHERE status IN ('pending','running') ORDER BY id LIMIT 1`
+);
+const insertRunStmt = db.prepare(
+  `INSERT INTO collect_runs (status, source, requested_at) VALUES ('pending', @source, @requested_at)`
+);
+const getRunStmt = db.prepare(`SELECT * FROM collect_runs WHERE id = ?`);
+const latestRunStmt = db.prepare(`SELECT * FROM collect_runs ORDER BY id DESC LIMIT 1`);
+const nextPendingStmt = db.prepare(`SELECT * FROM collect_runs WHERE status = 'pending' ORDER BY id LIMIT 1`);
+const claimRunStmt = db.prepare(
+  `UPDATE collect_runs SET status = 'running', started_at = @started_at
+     WHERE id = @id AND status = 'pending'`
+);
+const finishRunStmt = db.prepare(
+  `UPDATE collect_runs SET status = @status, finished_at = @finished_at, inserted = @inserted, error = @error
+     WHERE id = @id`
+);
+const reclaimRunningStmt = db.prepare(
+  `UPDATE collect_runs SET status='error', finished_at=@now,
+       error='timed out — poller did not report (presumed dead)'
+     WHERE status='running' AND started_at < @cut`
+);
+const reclaimPendingStmt = db.prepare(
+  `UPDATE collect_runs SET status='error', finished_at=@now,
+       error='timed out — no poller claimed the run'
+     WHERE status='pending' AND requested_at < @cut`
+);
+
+function reclaimStale(): void {
+  const now = Date.now();
+  reclaimRunningStmt.run({ now: new Date(now).toISOString(), cut: new Date(now - RUNNING_STALE_MS).toISOString() });
+  reclaimPendingStmt.run({ now: new Date(now).toISOString(), cut: new Date(now - PENDING_STALE_MS).toISOString() });
+}
+
+// Enqueue a run. Single-flight: if one is already pending/running, return it with
+// alreadyActive=true instead of stacking a redundant second pass.
+export function enqueueRun(source: "manual" | "daily"): { run: CollectRun; alreadyActive: boolean } {
+  reclaimStale();
+  const active = activeRunStmt.get() as CollectRun | undefined;
+  if (active) return { run: active, alreadyActive: true };
+  const res = insertRunStmt.run({ source, requested_at: new Date().toISOString() });
+  return { run: getRunStmt.get(Number(res.lastInsertRowid)) as unknown as CollectRun, alreadyActive: false };
+}
+
+// Poller claims the oldest pending run (pending → running) atomically.
+export function claimNextRun(): CollectRun | null {
+  reclaimStale();
+  const next = nextPendingStmt.get() as CollectRun | undefined;
+  if (!next) return null;
+  const res = claimRunStmt.run({ id: next.id, started_at: new Date().toISOString() });
+  if (Number(res.changes) === 0) return null; // lost a race; next poll retries
+  return getRunStmt.get(next.id) as unknown as CollectRun;
+}
+
+// Poller reports the outcome of a claimed run.
+export function finishRun(id: number, result: { inserted?: number; error?: string }): void {
+  finishRunStmt.run({
+    id,
+    status: result.error ? "error" : "done",
+    finished_at: new Date().toISOString(),
+    inserted: result.inserted ?? null,
+    error: result.error ?? null,
+  });
+}
+
+// Latest run (any status) — drives the UI button state + completion notification.
+export function latestRun(): CollectRun | null {
+  reclaimStale();
+  return (latestRunStmt.get() as CollectRun | undefined) ?? null;
 }
 
 export default db;
