@@ -6,3 +6,6 @@ After=network-online.target
 Type=oneshot
 ExecStart=/bin/bash -lc '%h/.local/bin/social-collect-watchdog.sh'
 SyslogIdentifier=social-collect
+# The watchdog may launch a CDP Chrome for the claude-web collector; keep it
+# alive between runs (default control-group kill would reap it on exit).
+KillMode=process

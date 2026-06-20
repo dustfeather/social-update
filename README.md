@@ -125,9 +125,17 @@ same-origin `fetch()` in your genuine session, and never closes your browser. Un
 `CLAUDE_CDP_URL` to skip web collection entirely. The login session lasts weeks;
 re-log when the collector starts reporting auth failures.
 
-> For the unattended daily timer this means keeping that Chrome instance alive
-> (and `DISPLAY` available under WSLg). If the debug browser is down at collect
-> time, `claude-web` reports FAILED in journald and the other sources still run.
+For the unattended daily timer, `social-collect-watchdog.sh` handles this: it
+exports `DISPLAY=:0` (WSLg), and if `CLAUDE_CDP_URL` is set it launches a Chrome
+on that port from `CLAUDE_CHROME_PROFILE` (default
+`$HOME/.cache/social-update/chrome-profile`) when one isn't already up. The
+service runs with `KillMode=process` so that Chrome survives between runs and
+keeps its Cloudflare clearance + login — only the first run (or a re-login after
+the session lapses) needs a human to pass Turnstile once. After changing these
+files, redeploy with `scripts/install-collector-systemd.sh`.
+
+> If the debug browser is unreachable at collect time, `claude-web` reports
+> FAILED in journald and the other sources still run.
 
 ### Legacy: Windows Task Scheduler (deprecated)
 

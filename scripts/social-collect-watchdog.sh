@@ -17,6 +17,40 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
+# The claude-web collector attaches to a real Chrome over CDP (claude.ai's
+# Cloudflare Turnstile blocks launched/automated browsers — see README). Under
+# WSLg the browser needs a display; systemd --user doesn't inherit one.
+export DISPLAY="${DISPLAY:-:0}"
+
+# Helper: read a single key from .env (don't `source` it — quoted paths w/ spaces).
+envval() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
+
+# If CLAUDE_CDP_URL is set, make sure a logged-in Chrome is listening on that
+# port before collecting. The service runs with KillMode=process, so a Chrome we
+# launch survives between daily runs (keeping its Cloudflare clearance + login —
+# only the first run, or a re-login, needs a human to pass Turnstile once).
+CDP="$(envval CLAUDE_CDP_URL)"
+if [ -n "$CDP" ]; then
+  PORT="${CDP##*:}"
+  PROFILE="$(envval CLAUDE_CHROME_PROFILE)"; PROFILE="${PROFILE:-$HOME/.cache/social-update/chrome-profile}"
+  if ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
+    CHROME="$(command -v chromium || command -v chromium-browser || command -v google-chrome || echo /snap/bin/chromium)"
+    echo "claude-web: starting $CHROME on :$PORT (profile $PROFILE)"
+    setsid "$CHROME" --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
+      --no-first-run --no-default-browser-check >/tmp/social-collect-chrome.log 2>&1 &
+    disown 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/json/version" && break
+      sleep 1
+    done
+  fi
+  if ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
+    # Not fatal: collect.ts catches per-source, so other sources still run; the
+    # FAILED grep below will flag claude-web so it surfaces in journald.
+    echo "WARN: claude-web CDP Chrome unreachable on :$PORT (may need a manual re-login)"
+  fi
+fi
+
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 INGEST="${INGEST:-https://social.itguys.ro}"
