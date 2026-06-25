@@ -1,0 +1,12 @@
+[Unit]
+Description=vault-keeper daily writer (distill git+transcript activity into the vault)
+After=network-online.target social-collect.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# HOME is required so the headless `claude` loads ~/.claude/settings.json
+# (bypassPermissions); the writer also resolves the vault + transcripts from it.
+Environment=HOME=%h
+ExecStart=/bin/bash -lc '%h/.local/bin/vault-daily.sh'
+SyslogIdentifier=vault-daily
