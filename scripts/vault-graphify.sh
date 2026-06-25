@@ -27,6 +27,7 @@
 #   vault-graphify.sh --shadow       # AST-only (no LLM, no --global, no hooks) dry pass
 #   vault-graphify.sh --repo NAME    # single repo (dir name under ~/projects, or 'vault')
 #   vault-graphify.sh --no-hooks     # skip post-commit hook install
+#   vault-graphify.sh --hooks-only   # (re)install freshness hooks, no extraction
 #
 set -uo pipefail
 
@@ -41,13 +42,15 @@ TAG_PREFIX=""                            # global tags are bare dir names
 
 SHADOW=0
 NO_HOOKS=0
+HOOKS_ONLY=0
 ONLY_REPO=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --shadow)   SHADOW=1 ;;
-    --no-hooks) NO_HOOKS=1 ;;
-    --repo)     ONLY_REPO="${2:-}"; shift ;;
+    --shadow)     SHADOW=1 ;;
+    --no-hooks)   NO_HOOKS=1 ;;
+    --hooks-only) HOOKS_ONLY=1 ;;
+    --repo)       ONLY_REPO="${2:-}"; shift ;;
     *) echo "vault-graphify: unknown arg '$1'" >&2; exit 2 ;;
   esac
   shift
@@ -65,6 +68,11 @@ ingest() {
   local path="$1" tag="$2" is_git="$3"
   [[ -d "$path" ]] || { log "skip $tag: $path missing"; return; }
 
+  if [[ $HOOKS_ONLY -eq 1 ]]; then
+    [[ $is_git -eq 1 ]] && { install_freshness_hook "$path" "$tag" && log "freshness hook → $tag" || log "WARN hook $tag"; }
+    return
+  fi
+
   if [[ $SHADOW -eq 1 ]]; then
     log "shadow (AST-only) $tag"
     graphify update "$path" 2>&1 | sed "s/^/  [$tag] /"
@@ -79,16 +87,54 @@ ingest() {
   local rc=${PIPESTATUS[0]}
   [[ $rc -ne 0 ]] && { log "WARN $tag: extract exit $rc"; }
 
-  # Freshness: post-commit rebuild hook (git repos only).
+  # Freshness: post-commit hook (git repos only). NOT `graphify hook install` —
+  # that only rebuilds the repo's own graph and leaves the federated global graph
+  # stale (graphify has no auto-global sync). Our hook does BOTH, detached.
   if [[ $is_git -eq 1 && $NO_HOOKS -eq 0 ]]; then
-    ( cd "$path" && graphify hook install >/dev/null 2>&1 ) \
-      && log "  hook installed $tag" || log "  WARN hook install failed $tag"
+    install_freshness_hook "$path" "$tag" && log "  freshness hook → $tag" || log "  WARN hook $tag"
     # keep graph artifacts out of git without touching the tracked .gitignore
     local excl="$path/.git/info/exclude"
     if [[ -f "$excl" ]] && ! grep -qx 'graphify-out/' "$excl" 2>/dev/null; then
       printf 'graphify-out/\n' >> "$excl"
     fi
   fi
+}
+
+# Resolve a repo's ACTIVE hooks dir (honours core.hooksPath, e.g. shared .githooks).
+hooks_dir() {
+  local path="$1" hp
+  hp="$(git -C "$path" config core.hooksPath 2>/dev/null || true)"
+  if [[ -n "$hp" ]]; then case "$hp" in /*) echo "$hp";; *) echo "$path/$hp";; esac
+  else echo "$path/.git/hooks"; fi
+}
+
+# Install our post-commit hook: rebuild this repo's graph (AST, no LLM) AND
+# re-merge it into ~/.graphify/global-graph.json, detached so the commit returns
+# immediately. Idempotent (overwrites our own marker block). No cron needed.
+install_freshness_hook() {
+  local path="$1" dir; dir="$(hooks_dir "$path")"
+  mkdir -p "$dir" || return 1
+  cat > "$dir/post-commit" <<'HOOK'
+#!/bin/sh
+# vault-keeper:graphify-freshness — keep this repo's graph AND the federated
+# global graph current on every commit (AST-only, no LLM). Detached → never
+# blocks the commit. Bypass with GRAPHIFY_SKIP_HOOK=1. Managed by vault-graphify.sh.
+[ "${GRAPHIFY_SKIP_HOOK:-0}" = "1" ] && exit 0
+GD=$(git rev-parse --git-dir 2>/dev/null) || exit 0
+{ [ -d "$GD/rebase-merge" ] || [ -d "$GD/rebase-apply" ] || [ -f "$GD/MERGE_HEAD" ] || [ -f "$GD/CHERRY_PICK_HEAD" ]; } && exit 0
+PATH="$HOME/.local/bin:$PATH"; export PATH
+command -v graphify >/dev/null 2>&1 || exit 0
+ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
+TAG=$(basename "$ROOT")
+LOG="$HOME/.cache/graphify-rebuild.log"; mkdir -p "$HOME/.cache"
+( cd "$ROOT" \
+  && PYTHONHASHSEED=0 graphify update . \
+  && graphify global add graphify-out/graph.json --as "$TAG" \
+) >>"$LOG" 2>&1 &
+exit 0
+HOOK
+  chmod +x "$dir/post-commit"
+  # graphify may have dropped its own post-checkout (local-only rebuild) — harmless, leave it.
 }
 
 # --- repos under ~/projects (git only) ---
