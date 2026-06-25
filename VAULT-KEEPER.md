@@ -72,12 +72,36 @@ _Inbox   Daily Notes   Projects   Resources   Notes   System
 - New timer, **Sunday 19:00** (after Sunday daily run; end of ISO week).
 - Model: **Opus 4.8**. Reuses `prompt.txt` → LinkedIn drafts into a **weekly note** `Daily Notes/YYYY/Www.md`.
 
-### 4.4 Graphify (knowledge graph)
-- `pip install graphifyy` → `graphify install` → `graphify claude install` per project.
-- **Scope C**: per-repo graphs (all 15) **+** a vault graph, **federated via workspace mode** (`graphify init --workspace`; community feature — Issue #425 — keep **logical-join-via-repo-map fallback** if too green).
-- `graphify claude install` writes `CLAUDE.md` directive + `PreToolUse` hook (fires before Glob/Grep → reads `graphify-out/GRAPH_REPORT.md`). Edge-level: `/graphify query|path|explain`.
-- Freshness: `graphify hook install` (post-commit/post-checkout rebuild) → use **`.git/hooks`**. The `repo-map`/`Local Repos` provides repo↔note bridge edges; Graphify adds inferred cross-source edges. Mirror links in Obsidian (`Repos:` wikilinks) for the human graph.
-- Per-repo install **modifies each repo** (`CLAUDE.md`+`settings.json`+hooks) — accepted.
+### 4.4 Graphify (knowledge graph) — **BUILT** (slice 4)
+Built against graphify(y) **v0.8.x**; CLI reality differs from the original design,
+which assumed a workspace/federation mode and a Glob/Grep hook that **do not exist**.
+Scripts: `scripts/install-vault-graphify.sh` (setup) + `scripts/vault-graphify.sh` (worker).
+- **Install (global, once)**: `pipx install graphifyy` (+ `pipx inject graphifyy anthropic`)
+  → `graphify install --platform claude`. Registers the `/graphify` skill at
+  `~/.claude/skills/graphify/` and appends a 3-line trigger to `~/.claude/CLAUDE.md`.
+  It does **NOT** touch `settings.json` / add a Glob/Grep `PreToolUse` hook (the v0.8
+  integration is the `/graphify` skill, not a pre-tool intercept). Global `CLAUDE.md`
+  is backed up to `.vault-keeper/backups/` first.
+- **Backend = `claude-cli`** (not the SDK `claude` backend): graphify shells
+  `claude -p --output-format json --model haiku`, authenticating via the existing
+  Claude **subscription** login — **no metered `ANTHROPIC_API_KEY`** (the SDK `claude`
+  backend would need one; the local gateway relays `x-api-key` and 401s a dummy).
+  `GRAPHIFY_CLAUDE_CLI_MODEL=haiku` keeps the structured extraction cheap. Each
+  `claude -p` boots the full MCP stack (serena/context-mode) per chunk → slow but free.
+- **Federation = `extract --global --as <tag>`** (NOT workspace mode — Issue #425 never
+  shipped). Every repo + the vault merges into **one** `~/.graphify/global-graph.json`.
+  This supersedes the logical-join-via-repo-map fallback the design held in reserve.
+  Query the federated graph: `graphify query "<q>" --graph ~/.graphify/global-graph.json`
+  (also `path "A" "B"`, `explain "X"`). Per-repo graphs live in each repo's
+  `graphify-out/` (git-excluded via `.git/info/exclude`, not the tracked `.gitignore`).
+- **Scope**: 15 git repos under `~/projects` + the vault. Vault graph output goes to
+  `~/.graphify/vaultgraph/` (NOT into the synced vault — keeps graph internals out of
+  Syncthing/OneDrive, spec §8).
+- **Freshness**: `graphify hook install` per repo = a **post-commit** rebuild hook
+  (`.git/hooks`, AST-only, no LLM). Worker installs it for every git repo.
+- Idempotent: graphify's SHA256 cache (`graphify-out/cache/`) reprocesses only changed
+  files, so the worker is safe to re-run. `--shadow` = AST-only (`graphify update`, no
+  LLM/quota, no `--global`, no hooks) for a free dry pass.
 
 ### 4.5 Git backup
 - Periodic snapshot only: scoped `git add` (**never `-A`**) → commit → push to `obsidian-sync`. Decoupled from writing.
@@ -121,11 +145,11 @@ _Inbox   Daily Notes   Projects   Resources   Notes   System
 
 ## 7. Build order (vertical slices)
 
-1. **Vault rename + teardown** — de-number folders (`_Inbox` etc.), merge Areas→Projects, do all of §6.
-2. **Inbox sorter service** (Haiku) — smallest end-to-end loop; validates 9p-poll + write-guard + Syncthing propagation.
-3. **Daily writer + ledger + write-guard hook** — shadow first-run → live. Project notes + decisions + daily digest.
-4. **Graphify** — install, federate, wire freshness hooks.
-5. **Weekly drafts** (Opus) — Sunday timer, reuse `prompt.txt`.
+1. ✅ **Vault rename + teardown** — de-number folders (`_Inbox` etc.), merge Areas→Projects, do all of §6.
+2. ✅ **Inbox sorter service** (Haiku) — smallest end-to-end loop; validates 9p-poll + write-guard + Syncthing propagation.
+3. ✅ **Daily writer + ledger + write-guard hook** — shadow first-run → live. Project notes + decisions + daily digest.
+4. ✅ **Graphify** — install, federate (`--global`), per-repo post-commit freshness hooks. See §4.4.
+5. **Weekly drafts** (Opus) — Sunday timer, reuse `prompt.txt`. ← next
 
 ---
 
