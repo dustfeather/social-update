@@ -1,0 +1,11 @@
+[Unit]
+Description=vault-keeper inbox sorter (classify + route _Inbox via Haiku)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# HOME is required so the headless `claude` loads ~/.claude/settings.json
+# (bypassPermissions); without it the run falls back to default mode and hangs.
+Environment=HOME=%h
+ExecStart=/bin/bash -lc '%h/.local/bin/vault-inbox-sorter.sh'
+SyslogIdentifier=vault-inbox-sort

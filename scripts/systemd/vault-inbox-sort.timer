@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll the vault _Inbox every 30s and sort it
+
+[Timer]
+# 9p has no inotify, so we poll. AccuracySec=1s stops the default 1min accuracy
+# from coalescing the 30s interval up to a minute.
+OnBootSec=45s
+OnUnitActiveSec=30s
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target
