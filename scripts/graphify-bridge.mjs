@@ -173,6 +173,22 @@ function nameCommunities(outDir, { byRepo = false } = {}) {
 function exportHtml(workDir) {
   // `graphify export html` reads <cwd>/graphify-out/graph.json + .graphify_labels.json
   execSync(`"${GRAPHIFY}" export html`, { cwd: workDir, stdio: "ignore" });
+  pinLayoutSeed(path.join(workDir, "graphify-out", "graph.html"));
+}
+
+// vis-network seeds initial node positions with Math.random() each load, so the
+// layout's rotation/placement differs every time the same graph is opened.
+// Pin a fixed randomSeed (+ skip the nondeterministic improvedLayout pre-pass) so
+// the force-directed layout converges the same way on every rebuild. Still draggable,
+// not frozen. Done here (not in the graphify package) so it survives `graphify` upgrades.
+function pinLayoutSeed(htmlPath) {
+  if (!fs.existsSync(htmlPath)) return;
+  let s = fs.readFileSync(htmlPath, "utf8");
+  if (s.includes("randomSeed")) return; // already pinned (e.g. patched graphify build)
+  const anchor = "new vis.Network(container, { nodes: nodesDS, edges: edgesDS }, {";
+  if (!s.includes(anchor)) { console.log(`pinLayoutSeed: anchor not found in ${htmlPath}`); return; }
+  s = s.replace(anchor, `${anchor}\n  layout: { randomSeed: 42, improvedLayout: false },`);
+  fs.writeFileSync(htmlPath, s);
 }
 
 // graphify colours by COMMUNITY_COLORS[cid % 10] — only 10 colours, so the merged
