@@ -74,6 +74,14 @@ const g = JSON.parse(fs.readFileSync(GLOBAL, "utf8"));
 const nodes = g.nodes;
 const links = g.links;
 
+// The vault federates under a tag = its dir basename ("Obsidian Vault"), which can
+// drift on rename and once duplicated a stale "vault" tag. Detect it by content —
+// the tag that owns the Projects MOC note — so we never hardcode the tag name.
+const VAULT_TAG = (() => {
+  const moc = nodes.find((n) => (n.source_file || "") === "Projects/Projects.md");
+  return moc ? moc.repo : "vault";
+})();
+
 // degree map -> repo anchor = highest-degree node in that repo's island
 const deg = {};
 for (const e of links) { deg[e.source] = (deg[e.source] || 0) + 1; deg[e.target] = (deg[e.target] || 0) + 1; }
@@ -83,10 +91,17 @@ for (const n of nodes) (byRepo[n.repo] = byRepo[n.repo] || []).push(n);
 
 // vault DOC nodes only — the .md MOC. The .obsidian/* plugin config (609 of 648)
 // is noise and is dropped from every view.
-const isVaultDoc = (n) => n.repo === "vault" && !(n.source_file || "").startsWith(".obsidian/");
+const isVaultDoc = (n) => n.repo === VAULT_TAG && !(n.source_file || "").startsWith(".obsidian/");
 const vaultDocs = nodes.filter(isVaultDoc);
+// graphify emits many nodes per note (the file at L1, then one per heading). Map
+// each note to its FILE node (lowest source_location), not the last heading.
+const lineNo = (n) => parseInt(String(n.source_location || "L999999").replace(/\D/g, ""), 10) || 999999;
 const vaultByFile = {};
-for (const n of vaultDocs) if (n.source_file) vaultByFile[n.source_file] = n;
+for (const n of vaultDocs) {
+  if (!n.source_file) continue;
+  const ex = vaultByFile[n.source_file];
+  if (!ex || lineNo(n) < lineNo(ex)) vaultByFile[n.source_file] = n;
+}
 const vaultDocIds = new Set(vaultDocs.map((n) => n.id));
 
 const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -100,7 +115,7 @@ try {
 const projByName = {};
 for (const p of projNotes) projByName[norm(path.basename(p, ".md"))] = p;
 
-const repos = Object.keys(byRepo).filter((r) => r !== "vault").sort();
+const repos = Object.keys(byRepo).filter((r) => r !== VAULT_TAG).sort();
 
 const matches = [];
 for (const repo of repos) {
@@ -159,6 +174,22 @@ function exportHtml(workDir) {
   execSync(`"${GRAPHIFY}" export html`, { cwd: workDir, stdio: "ignore" });
 }
 
+// A repo attaches ONLY to its own Project note + the ancestry up to the MOC
+// (project -> area MOC -> Projects MOC), derived by PATH so no sibling projects
+// leak in. e.g. Projects/Software Business/Flotila.md ->
+//   [Flotila.md, Software Business/Software Business.md, Projects/Projects.md]
+function ancestry(noteRel) {
+  const out = [noteRel];
+  const parts = noteRel.split("/");
+  if (parts.length === 3 && parts[0] === "Projects") {       // Projects/<Area>/<Name>.md
+    const area = `Projects/${parts[1]}/${parts[1]}.md`;
+    if (area !== noteRel) out.push(area);
+  }
+  const MOC = "Projects/Projects.md";
+  if (noteRel !== MOC) out.push(MOC);
+  return out;
+}
+
 // ---------- 1. per-repo bridged graphs (primary view) ----------
 if (!NO_HTML && !NO_REPOS) {
   let built = 0;
@@ -168,20 +199,25 @@ if (!NO_HTML && !NO_REPOS) {
     if (!vnode) continue;
     const repoNodes = byRepo[m.repo];
     const repoIds = new Set(repoNodes.map((n) => n.id));
-    // vault docs ride along in one fresh community so they render as a single
-    // labelled "Vault Projects / docs" group connected to this repo.
+    // just this repo's Project note + its ancestry chain (no sibling projects),
+    // in one fresh community -> renders as a small "Vault Projects / docs" group.
+    const chain = ancestry(m.note).map((p) => vaultByFile[p]).filter(Boolean);
     const repoComms = repoNodes.map((n) => n.community).filter((c) => typeof c === "number");
     const docComm = (repoComms.length ? Math.max(...repoComms) : 0) + 1;
-    const docNodes = vaultDocs.map((n) => ({ ...n, repo: "vault-docs", _origin: "vault", community: docComm }));
-    const keep = new Set([...repoIds, ...vaultDocIds]);
-    const subLinks = links.filter((e) => keep.has(e.source) && keep.has(e.target));
+    const docNodes = chain.map((n) => ({ ...n, repo: "vault-docs", _origin: "vault", community: docComm }));
+    const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
+    // chain edges project -> area -> MOC so the path up the tree renders
+    const chainLinks = [];
+    for (let i = 0; i < chain.length - 1; i++)
+      chainLinks.push({ relation: "in_parent", confidence: "BRIDGE", weight: 1, confidence_score: 1,
+        source: chain[i].id, target: chain[i + 1].id });
     const bridge = {
       relation: "documented_in", confidence: "BRIDGE", weight: 2, confidence_score: 1,
-      source: m.anchor.id, target: vnode.id,
+      source: m.anchor.id, target: (chain[0] || vnode).id,
     };
     const combined = {
       directed: !!g.directed, multigraph: false, graph: {},
-      nodes: [...repoNodes, ...docNodes], links: [...subLinks, bridge],
+      nodes: [...repoNodes, ...docNodes], links: [...repoLinks, ...chainLinks, bridge],
     };
     const outDir = path.join(REPO_BRIDGED, m.repo, "graphify-out");
     fs.mkdirSync(outDir, { recursive: true });
@@ -196,7 +232,7 @@ if (!NO_HTML && !NO_REPOS) {
 // ---------- 2. merged bridged graph.json -> graph.html ----------
 if (!NO_HTML) {
   // every node EXCEPT the vault .obsidian noise, plus the repo->note bridge edges
-  const keptNodes = nodes.filter((n) => n.repo !== "vault" || isVaultDoc(n));
+  const keptNodes = nodes.filter((n) => n.repo !== VAULT_TAG || isVaultDoc(n));
   const keptIds = new Set(keptNodes.map((n) => n.id));
   const keptLinks = links.filter((e) => keptIds.has(e.source) && keptIds.has(e.target));
   const bridged = { ...g, nodes: [...keptNodes], links: [...keptLinks] };
