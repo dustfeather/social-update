@@ -1,0 +1,12 @@
+[Unit]
+Description=vault-keeper repo->Projects backfill + graph refresh (document new repos, rebuild the federated graph)
+After=network-online.target vault-daily.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# HOME is required so the headless `claude` loads ~/.claude/settings.json
+# (bypassPermissions); the script also resolves the vault + repos from it.
+Environment=HOME=%h
+ExecStart=/bin/bash -lc '%h/.local/bin/vault-repos.sh'
+SyslogIdentifier=vault-repos

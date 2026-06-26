@@ -29,6 +29,100 @@ The collectors stay on your machine (they need local `gh`, the Obsidian vault, a
   running **in the cluster pod** (auth via `CLAUDE_CODE_OAUTH_TOKEN`), which returns a JSON
   array of drafts. Each generation is saved to `drafts`.
 
+### Flow: collectors, Obsidian, and where Claude fires
+
+Three independent loops run on the machine. Nodes where **Claude is actually invoked** are
+highlighted — most automation is plain deterministic code; the model is called at only a few
+points (the in-pod drafter, the vault-keeper writers/sorter, and graphify).
+
+```mermaid
+flowchart TB
+    subgraph triggers["timers / hooks / manual (WSL)"]
+        T1["social-collect.timer<br/>daily 18:00"]
+        T2["vault-daily.timer<br/>daily 19:00"]
+        T3["vault-weekly.timer<br/>Sun 19:00"]
+        T4["vault-inbox-sort.timer<br/>every 30s (scan; Claude only if settled notes)"]
+        T5["vault-repos.timer<br/>daily 19:30"]
+        GH["git post-commit hook"]
+        MAN["manual: vault-graphify.sh<br/>(full federated ingest)"]
+    end
+
+    %% ---------- Collection loop ----------
+    subgraph collect["1 · Collection (local → cluster)"]
+        SVC["social-collect.service<br/>enqueue 'daily'"]
+        POLL["social-collect-poll.sh<br/>(poller: timer + UI runs)"]
+        WD["social-collect-watchdog.sh<br/>probe ingest canary · launch CDP Chrome"]
+        COL["collect.ts (per-source, fault-isolated)"]
+        SRC_GH["github — authed gh events"]
+        SRC_OB["obsidian — vault (read-only)"]
+        SRC_CC["claude-code — ~/.claude/projects transcripts"]
+        SRC_CW["claude-web — CDP → your logged-in Chrome → claude.ai"]
+    end
+
+    subgraph cluster["k3s · social.itguys.ro (acer-laptop, WARP-only)"]
+        ING["Express POST /api/ingest"]
+        DB[("SQLite /data PVC")]
+        UI["web UI"]
+        GEN["POST /api/generate"]
+        CLI["in-pod claude CLI<br/>--model opus (OAUTH)"]
+        DRAFTS["drafts table → copy/paste (manual)"]
+    end
+
+    %% ---------- Obsidian vault-keeper ----------
+    subgraph vault["2 · Obsidian vault-keeper (local, vault writes are guarded)"]
+        VD["vault-daily.js → claude --model opus<br/>distill git+transcripts"]
+        VW["vault-weekly.js → claude --model opus<br/>ISO-week LinkedIn drafts"]
+        VI["vault-inbox-sorter.sh → claude --model haiku<br/>classify + route _Inbox"]
+        VGH["graphify update . (AST, no LLM)<br/>+ graphify global add"]
+        VGE["graphify extract --backend claude-cli<br/>(LLM full extraction)"]
+        VR["vault-repos.mjs → claude --model opus<br/>document any new repo as a Project note"]
+        BR["graphify-bridge.mjs<br/>join repos ↔ Projects"]
+        OBS[("~/obsidian.md vault")]
+        GRAPH[("~/.graphify/global-graph.json")]
+        CANVAS[("_graphify/repos-to-projects.canvas")]
+    end
+
+    T1 --> SVC --> POLL
+    POLL --> WD --> COL
+    COL --> SRC_GH & SRC_OB & SRC_CC & SRC_CW
+    SRC_GH & SRC_OB & SRC_CC & SRC_CW -->|POST /api/ingest| ING
+    ING --> DB
+    DB --> UI
+    UI -->|Generate| GEN --> CLI --> DRAFTS
+    DRAFTS -.saved.-> DB
+
+    T2 --> VD --> OBS
+    T3 --> VW --> OBS
+    T4 --> VI
+    OBS -->|_Inbox notes| VI --> OBS
+    GH --> VGH --> GRAPH
+    MAN --> VGE --> GRAPH
+    T5 --> VR
+    VR -->|new Project notes| OBS
+    VR --> BR
+    GRAPH --> BR
+    OBS --> BR
+    BR --> CANVAS
+
+    classDef claude fill:#d97757,stroke:#7a3b22,color:#fff;
+    class CLI,VD,VW,VI,VGE,VR,SRC_CW claude;
+```
+
+> Highlighted = a `claude` process runs. Note graphify: the **post-commit hook is AST-only, no
+> LLM** (`graphify update` + `global add`) — Claude is *not* called on commit. The LLM backend
+> (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
+> (claude-web) is also the odd one out: it does **not** run inference — it drives *your*
+> logged-in claude.ai session over CDP to scrape chat history (Cloudflare Turnstile blocks
+> automated browsers). The genuine model calls are the in-pod Opus drafter (`/api/generate`)
+> and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox = Haiku).
+>
+> **Keeping the graph fresh:** each repo's slice of `global-graph.json` is refreshed on
+> every commit by its AST post-commit hook (`VGH`). The daily `vault-repos` job (`T5`) then
+> documents any newly-added repo as a Project note (Opus) and re-runs `graphify-bridge.mjs`
+> (`BR`) to rebuild the bridged `graph.html` + the `repos-to-projects.canvas` (the native,
+> clickable Obsidian view). The `.canvas` reads vault Projects live, so it is always current;
+> the bridged `graph.html`'s vault nodes refresh on the next full `vault-graphify` ingest.
+
 ## Prerequisites (collector machine)
 
 - Node.js (run inside WSL).
