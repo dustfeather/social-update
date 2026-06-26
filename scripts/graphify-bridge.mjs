@@ -102,7 +102,6 @@ for (const n of vaultDocs) {
   const ex = vaultByFile[n.source_file];
   if (!ex || lineNo(n) < lineNo(ex)) vaultByFile[n.source_file] = n;
 }
-const vaultDocIds = new Set(vaultDocs.map((n) => n.id));
 
 const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
@@ -190,6 +189,55 @@ function ancestry(noteRel) {
   return out;
 }
 
+// Build a repo's bridged node/link set: repo nodes + master hub (one spoke per
+// community) + the repo's Project-note ancestry chain + the master->note bridge.
+// Shared by the per-repo view AND the merged union, so both carry the same shape.
+function buildRepoCombined(m) {
+  const vnode = vaultByFile[m.note];
+  if (!vnode) return null;
+  const repoNodes = byRepo[m.repo];
+  const repoIds = new Set(repoNodes.map((n) => n.id));
+  const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
+
+  // master = synthetic hub; every community hangs off it via its highest-degree node
+  const rdeg = {};
+  for (const e of repoLinks) { rdeg[e.source] = (rdeg[e.source] || 0) + 1; rdeg[e.target] = (rdeg[e.target] || 0) + 1; }
+  const commHub = {};
+  for (const n of repoNodes) {
+    const c = n.community;
+    if (c == null) continue;
+    if (!commHub[c] || (rdeg[n.id] || 0) > (rdeg[commHub[c].id] || 0)) commHub[c] = n;
+  }
+  const repoComms = repoNodes.map((n) => n.community).filter((c) => typeof c === "number");
+  const docComm = (repoComms.length ? Math.max(...repoComms) : 0) + 1;
+  const masterComm = docComm + 1;
+  const masterId = `${m.repo}::__repo__`;
+  const masterNode = {
+    id: masterId, label: m.repo, repo: m.repo, file_type: "repo",
+    _origin: "master", community: masterComm, source_file: null, source_location: null,
+  };
+  const masterLinks = Object.values(commHub).map((h) => ({
+    relation: "module", confidence: "BRIDGE", weight: 1.5, confidence_score: 1,
+    source: masterId, target: h.id,
+  }));
+
+  // this repo's Project note + ancestry chain (project -> area -> MOC), no siblings
+  const chain = ancestry(m.note).map((p) => vaultByFile[p]).filter(Boolean);
+  const docNodes = chain.map((n) => ({ ...n, repo: "vault-docs", _origin: "vault", community: docComm }));
+  const chainLinks = [];
+  for (let i = 0; i < chain.length - 1; i++)
+    chainLinks.push({ relation: "in_parent", confidence: "BRIDGE", weight: 1, confidence_score: 1,
+      source: chain[i].id, target: chain[i + 1].id });
+  const bridge = {
+    relation: "documented_in", confidence: "BRIDGE", weight: 2, confidence_score: 1,
+    source: masterId, target: (chain[0] || vnode).id,
+  };
+  return {
+    nodes: [...repoNodes, masterNode, ...docNodes],
+    links: [...repoLinks, ...masterLinks, ...chainLinks, bridge],
+  };
+}
+
 // ---------- 1. per-repo bridged graphs (primary view) ----------
 if (!NO_HTML && !NO_REPOS) {
   let built = 0;
@@ -197,52 +245,10 @@ if (!NO_HTML && !NO_REPOS) {
     if (!m.note || !m.anchor) continue;
     const vnode = vaultByFile[m.note];
     if (!vnode) continue;
-    const repoNodes = byRepo[m.repo];
-    const repoIds = new Set(repoNodes.map((n) => n.id));
-    const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
-
-    // Repo MASTER node: a single synthetic hub that every community hangs off (via
-    // its highest-degree node), so the graph reads as a star — master -> per-module
-    // hub -> internals — instead of many loose [repo] islands. The master is what
-    // bridges up to the Project note.
-    const rdeg = {};
-    for (const e of repoLinks) { rdeg[e.source] = (rdeg[e.source] || 0) + 1; rdeg[e.target] = (rdeg[e.target] || 0) + 1; }
-    const commHub = {};
-    for (const n of repoNodes) {
-      const c = n.community;
-      if (c == null) continue;
-      if (!commHub[c] || (rdeg[n.id] || 0) > (rdeg[commHub[c].id] || 0)) commHub[c] = n;
-    }
-    const repoComms = repoNodes.map((n) => n.community).filter((c) => typeof c === "number");
-    const docComm = (repoComms.length ? Math.max(...repoComms) : 0) + 1;
-    const masterComm = docComm + 1;
-    const masterId = `${m.repo}::__repo__`;
-    const masterNode = {
-      id: masterId, label: m.repo, repo: m.repo, file_type: "repo",
-      _origin: "master", community: masterComm, source_file: null, source_location: null,
-    };
-    const masterLinks = Object.values(commHub).map((h) => ({
-      relation: "module", confidence: "BRIDGE", weight: 1.5, confidence_score: 1,
-      source: masterId, target: h.id,
-    }));
-
-    // this repo's Project note + its ancestry chain (no sibling projects), in one
-    // fresh community -> renders as a small "Vault Projects / docs" group.
-    const chain = ancestry(m.note).map((p) => vaultByFile[p]).filter(Boolean);
-    const docNodes = chain.map((n) => ({ ...n, repo: "vault-docs", _origin: "vault", community: docComm }));
-    const chainLinks = [];
-    for (let i = 0; i < chain.length - 1; i++)
-      chainLinks.push({ relation: "in_parent", confidence: "BRIDGE", weight: 1, confidence_score: 1,
-        source: chain[i].id, target: chain[i + 1].id });
-    // master -> Project note (the single bridge into the vault)
-    const bridge = {
-      relation: "documented_in", confidence: "BRIDGE", weight: 2, confidence_score: 1,
-      source: masterId, target: (chain[0] || vnode).id,
-    };
+    const c = buildRepoCombined(m);
+    if (!c) continue;
     const combined = {
-      directed: !!g.directed, multigraph: false, graph: {},
-      nodes: [...repoNodes, masterNode, ...docNodes],
-      links: [...repoLinks, ...masterLinks, ...chainLinks, bridge],
+      directed: !!g.directed, multigraph: false, graph: {}, nodes: c.nodes, links: c.links,
     };
     const outDir = path.join(REPO_BRIDGED, m.repo, "graphify-out");
     fs.mkdirSync(outDir, { recursive: true });
@@ -254,31 +260,44 @@ if (!NO_HTML && !NO_REPOS) {
   console.log(`\nper-repo bridged graphs: ${built} -> ${REPO_BRIDGED}/<repo>/graphify-out/graph.html`);
 }
 
-// ---------- 2. merged bridged graph.json -> graph.html ----------
+// ---------- 2. merged bridged graph.html (union of the per-repo graphs) ----------
 if (!NO_HTML) {
-  // every node EXCEPT the vault .obsidian noise, plus the repo->note bridge edges
-  const keptNodes = nodes.filter((n) => n.repo !== VAULT_TAG || isVaultDoc(n));
-  const keptIds = new Set(keptNodes.map((n) => n.id));
-  const keptLinks = links.filter((e) => keptIds.has(e.source) && keptIds.has(e.target));
-  const bridged = { ...g, nodes: [...keptNodes], links: [...keptLinks] };
-  let added = 0;
+  // Union the same per-repo builds so every repo carries its master + module spokes,
+  // and dedup the shared vault Project notes/areas/MOC by id so all repos hang off
+  // ONE Projects tree. No cluster-only — that re-segmented the union and erased the
+  // master structure. Per-repo community ints collide, so remap each repo's to a
+  // unique global range; all vault-doc nodes share one community/colour.
+  const seen = new Map();           // node id -> kept node
+  const linkSeen = new Set();
+  const mergedNodes = [], mergedLinks = [];
+  let commBase = 1;
+  const SHARED_DOC_COMM = 0;
   for (const m of matches) {
-    if (!m.note) continue;
-    const vnode = vaultByFile[m.note];
-    if (!vnode || !m.anchor) continue;
-    bridged.links.push({
-      relation: "implements", confidence: "BRIDGE", weight: 2, confidence_score: 1,
-      source: vnode.id,        // Project note (vault)
-      target: m.anchor.id,     // repo anchor
-    });
-    added++;
+    if (!m.note || !m.anchor) continue;
+    const c = buildRepoCombined(m);
+    if (!c) continue;
+    const remap = {};               // this repo's local community -> unique global
+    for (const n of c.nodes) {
+      if (seen.has(n.id)) continue; // vault MOC/area shared across repos -> keep once
+      let comm;
+      if (n.repo === "vault-docs") comm = SHARED_DOC_COMM;
+      else { if (!(n.community in remap)) remap[n.community] = commBase++; comm = remap[n.community]; }
+      const nn = { ...n, community: comm };
+      seen.set(n.id, nn);
+      mergedNodes.push(nn);
+    }
+    for (const e of c.links) {
+      const k = `${e.source} ${e.target} ${e.relation}`;
+      if (linkSeen.has(k)) continue;
+      linkSeen.add(k);
+      mergedLinks.push(e);
+    }
   }
+  const bridged = { directed: !!g.directed, multigraph: false, graph: {}, nodes: mergedNodes, links: mergedLinks };
   fs.mkdirSync(BRIDGED_OUT, { recursive: true });
   fs.writeFileSync(path.join(BRIDGED_OUT, "graph.json"), JSON.stringify(bridged));
-  console.log(`\nbridged graph.json: ${added} bridge edges, ${keptNodes.length} nodes (.obsidian dropped)`);
+  console.log(`\nmerged graph.json: ${mergedNodes.length} nodes, ${mergedLinks.length} edges (union of per-repo; shared Projects tree, no cluster-only)`);
   try {
-    // re-cluster (no LLM), then name communities ourselves, then render.
-    execSync(`"${GRAPHIFY}" cluster-only "${BRIDGED_DIR}" --no-label --no-viz`, { stdio: "ignore" });
     nameCommunities(BRIDGED_OUT);
     exportHtml(BRIDGED_DIR);
     console.log(`merged graph.html: ${path.join(BRIDGED_OUT, "graph.html")}`);
