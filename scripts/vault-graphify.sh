@@ -28,6 +28,8 @@
 #   vault-graphify.sh --repo NAME    # single repo (dir name under ~/projects, or 'vault')
 #   vault-graphify.sh --no-hooks     # skip post-commit hook install
 #   vault-graphify.sh --hooks-only   # (re)install freshness hooks, no extraction
+#   vault-graphify.sh --track        # put the hook in tracked .githooks/ + commit it
+#                                    #   per repo (local commit only — never pushes)
 #
 set -uo pipefail
 
@@ -43,6 +45,7 @@ TAG_PREFIX=""                            # global tags are bare dir names
 SHADOW=0
 NO_HOOKS=0
 HOOKS_ONLY=0
+TRACK=0
 ONLY_REPO=""
 
 while [[ $# -gt 0 ]]; do
@@ -50,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --shadow)     SHADOW=1 ;;
     --no-hooks)   NO_HOOKS=1 ;;
     --hooks-only) HOOKS_ONLY=1 ;;
+    --track)      TRACK=1 ;;
     --repo)       ONLY_REPO="${2:-}"; shift ;;
     *) echo "vault-graphify: unknown arg '$1'" >&2; exit 2 ;;
   esac
@@ -100,20 +104,23 @@ ingest() {
   fi
 }
 
-# Resolve a repo's ACTIVE hooks dir (honours core.hooksPath, e.g. shared .githooks).
-hooks_dir() {
-  local path="$1" hp
-  hp="$(git -C "$path" config core.hooksPath 2>/dev/null || true)"
-  if [[ -n "$hp" ]]; then case "$hp" in /*) echo "$hp";; *) echo "$path/$hp";; esac
-  else echo "$path/.git/hooks"; fi
-}
-
 # Install our post-commit hook: rebuild this repo's graph (AST, no LLM) AND
 # re-merge it into ~/.graphify/global-graph.json, detached so the commit returns
 # immediately. Idempotent (overwrites our own marker block). No cron needed.
+#
+# Hook lives in the TRACKED .githooks/ dir so it can be committed (--track) and
+# shared. Repos on the default .git/hooks (or a relative `hooks`) are migrated:
+# core.hooksPath -> .githooks. NOTE: core.hooksPath is LOCAL config (not shared by
+# git), so a fresh clone has the tracked hook FILE but must run
+# `git config core.hooksPath .githooks` once to activate it.
 install_freshness_hook() {
-  local path="$1" dir; dir="$(hooks_dir "$path")"
+  local path="$1" tag="$2" dir="$path/.githooks"
+  # point this repo at .githooks if it isn't already
+  local hp; hp="$(git -C "$path" config core.hooksPath 2>/dev/null || true)"
+  [[ "$hp" == ".githooks" ]] || git -C "$path" config core.hooksPath .githooks
   mkdir -p "$dir" || return 1
+  # drop stale hooks graphify/we left in the old default dir (avoids double-run)
+  rm -f "$path/.git/hooks/post-commit" "$path/.git/hooks/post-checkout" 2>/dev/null
   cat > "$dir/post-commit" <<'HOOK'
 #!/bin/sh
 # vault-keeper:graphify-freshness — keep this repo's graph AND the federated
@@ -134,7 +141,23 @@ LOG="$HOME/.cache/graphify-rebuild.log"; mkdir -p "$HOME/.cache"
 exit 0
 HOOK
   chmod +x "$dir/post-commit"
-  # graphify may have dropped its own post-checkout (local-only rebuild) — harmless, leave it.
+
+  # --track: stage + commit the hook into the repo (LOCAL commit only, no push).
+  if [[ $TRACK -eq 1 ]]; then
+    local gd; gd="$(git -C "$path" rev-parse --git-dir 2>/dev/null)" || return 0
+    # skip mid-rebase/merge to avoid clobbering an in-progress operation
+    if [[ -d "$gd/rebase-merge" || -d "$gd/rebase-apply" || -f "$gd/MERGE_HEAD" || -f "$gd/CHERRY_PICK_HEAD" ]]; then
+      log "  skip commit $tag (repo mid-rebase/merge)"; return 0
+    fi
+    git -C "$path" add -- .githooks/post-commit 2>/dev/null
+    # commit ONLY this path (ignores any other staged/dirty files in the repo)
+    if ! git -C "$path" diff --cached --quiet -- .githooks/post-commit 2>/dev/null; then
+      git -C "$path" -c core.hooksPath=/dev/null commit -q \
+        -m "chore: track graphify freshness post-commit hook (vault-keeper)" \
+        -- .githooks/post-commit 2>/dev/null \
+        && log "  committed hook $tag" || log "  WARN commit failed $tag"
+    fi
+  fi
 }
 
 # --- repos under ~/projects (git only) ---
