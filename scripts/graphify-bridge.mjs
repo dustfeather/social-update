@@ -194,14 +194,76 @@ function pinLayoutSeed(htmlPath) {
 // graphify colours by COMMUNITY_COLORS[cid % 10] — only 10 colours, so the merged
 // graph's 14 repo-communities collide (cid 10..13 reuse 0..3). Repaint the exported
 // HTML with a curated, max-distinct qualitative palette (spans the wheel; bright so
-// it pops on the near-black #0f0f1a background). Assigned by sorted repo index so
-// neighbours never read as the same hue. Vault MOC/areas = fixed grey.
+// it pops on the near-black #0f0f1a background). Consumed in order by assignRepoColors
+// to seed new repos' persistent colours; once spent, repos get a spaced semi-random
+// hue. Vault MOC/areas = fixed grey.
 const REPO_PALETTE = [
   "#e6194B", "#f58231", "#ffe119", "#bfef45", "#3cb44b", "#42d4f4", "#4363d8",
   "#911eb4", "#f032e6", "#fabed4", "#469990", "#9A6324", "#aaffc3", "#dcbeff",
   "#ff8c00", "#00fa9a", "#1e90ff", "#ff1493",
 ];
 const VAULT_GREY = "#9aa0a6";
+
+// Persistent per-repo colour. The colour is minted ONCE per repo and stored, so it
+// survives graph regen; a freshly-added repo gets a brand-new colour the first time
+// it appears, and every existing repo keeps the colour it already had (no index-shift
+// reshuffle when the repo set changes). Lives outside the repo + vault so it persists.
+const REPO_COLORS_FILE = path.join(HOME, ".graphify", "repo-colors.json");
+const NEW_HUE_MIN_SEP = 28; // min hue° gap a random colour tries to keep from existing ones
+
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => {
+    const k = (n + h / 30) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, "0");
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+function hexToHue(hex) {
+  const r = parseInt(hex.slice(1, 3), 16) / 255;
+  const g = parseInt(hex.slice(3, 5), 16) / 255;
+  const b = parseInt(hex.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), d = max - Math.min(r, g, b);
+  if (!d) return 0;
+  let h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h *= 60; return h < 0 ? h + 360 : h;
+}
+// Semi-random bright colour (pops on the near-black bg), spaced from colours already
+// in use; falls back to the best-separated candidate when the wheel is crowded.
+function randomBrightHex(usedHexes) {
+  const usedHues = usedHexes.map(hexToHue);
+  let best = 0, bestSep = -1;
+  for (let t = 0; t < 48; t++) {
+    const h = Math.floor(Math.random() * 360);
+    const sep = usedHues.length
+      ? Math.min(...usedHues.map((u) => { const x = Math.abs(h - u) % 360; return Math.min(x, 360 - x); }))
+      : 360;
+    if (sep >= NEW_HUE_MIN_SEP) return hslToHex(h, 72, 58);
+    if (sep > bestSep) { bestSep = sep; best = h; }
+  }
+  return hslToHex(best, 72, 58);
+}
+// Map every repo to a persistent colour, minting one for any repo not seen before.
+// New repos first consume the curated max-distinct palette (so the graph keeps its
+// hand-picked look); once those 18 are spent, new repos get a spaced semi-random hue.
+function assignRepoColors(repos) {
+  let store = {};
+  try { store = JSON.parse(fs.readFileSync(REPO_COLORS_FILE, "utf8")); } catch { /* first run */ }
+  let changed = false;
+  for (const r of repos) {
+    if (store[r]) continue;
+    const used = new Set(Object.values(store).map((c) => c.toLowerCase()));
+    const fromPalette = REPO_PALETTE.find((c) => !used.has(c.toLowerCase()));
+    store[r] = fromPalette || randomBrightHex(Object.values(store));
+    changed = true;
+    console.log(`repo-colour: assigned ${store[r]} to new repo ${r}`);
+  }
+  if (changed) fs.writeFileSync(REPO_COLORS_FILE, JSON.stringify(store, null, 2) + "\n");
+  return store;
+}
+
 // Replace a `const NAME = [ ... ];` JSON array literal in the HTML via bracket match.
 function spliceJsonArray(s, marker, mutate) {
   const at = s.indexOf(marker);
@@ -368,10 +430,9 @@ if (!NO_HTML) {
   try {
     nameCommunities(BRIDGED_OUT, { byRepo: true });
     exportHtml(BRIDGED_DIR);
-    // distinct colour per repo from the curated palette, by sorted repo index
+    // persistent per-repo colour (minted once, stored, new repo -> new colour)
     const sortedRepos = [...new Set(matches.filter((m) => m.note && m.anchor).map((m) => m.repo))].sort();
-    const colorMap = {};
-    sortedRepos.forEach((r, i) => { colorMap[r] = REPO_PALETTE[i % REPO_PALETTE.length]; });
+    const colorMap = assignRepoColors(sortedRepos);
     repaletteByRepo(path.join(BRIDGED_OUT, "graph.html"), colorMap);
     console.log(`merged graph.html: ${path.join(BRIDGED_OUT, "graph.html")}`);
   } catch (e) {
