@@ -105,6 +105,22 @@ for (const n of vaultDocs) {
   if (!ex || lineNo(n) < lineNo(ex)) vaultByFile[n.source_file] = n;
 }
 
+// Noise denylist: manifest/config/lockfile/CI/test files that graphify explodes into
+// one node per key/dep/step — high count, ~zero architectural signal. Dropped from every
+// bridged view (same spirit as the .obsidian/* drop). NOTE: content YAML is intentionally
+// KEPT — the homelab repos (k3s-cluster, nextcloud, ...) ARE their k8s/docker manifests.
+const NOISE = [
+  /\.json$/,                                    // package/tsconfig/*.schema/manifest/data — key-explosion
+  /(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|composer\.lock|Gemfile\.lock|go\.sum)$/,
+  /(^|\/)\.github\//,                            // CI workflows
+  /(^|\/)\.[^/]*rc(\.[^/]*)?$/,                  // .eslintrc/.prettierrc/.babelrc/.npmrc/.nvmrc...
+  /(^|\/)(eslint|prettier|jest|vitest|babel|postcss|tailwind|vite|rollup|webpack|tsup|next)\.config\.[cm]?[jt]s$/,
+  /\.(test|spec)\.[cm]?[jt]sx?$/,               // js/ts unit tests
+  /(^|\/)(__tests__|__mocks__)\//,
+  /(^|\/)test_[^/]*\.py$|_test\.py$/,           // python tests
+];
+const isNoise = (n) => { const f = n.source_file || ""; return f !== "" && NOISE.some((re) => re.test(f)); };
+
 const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 // build name->projectNote index from the actual vault Project notes
@@ -322,7 +338,7 @@ function ancestry(noteRel) {
 function buildRepoCombined(m) {
   const vnode = vaultByFile[m.note];
   if (!vnode) return null;
-  const repoNodes = byRepo[m.repo];
+  const repoNodes = byRepo[m.repo].filter((n) => !isNoise(n)); // drop config/manifest/test noise
   const repoIds = new Set(repoNodes.map((n) => n.id));
   const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
 
@@ -481,7 +497,7 @@ if (!NO_HTML) {
   // repo colour; the rest share the grey "Vault Projects / docs" community.
   for (const f of Object.keys(vaultByFile)) {
     const vn = vaultByFile[f];
-    if (seen.has(vn.id)) continue; // already added via a repo bridge
+    if (seen.has(vn.id) || isNoise(vn)) continue; // already added, or config/data noise
     const comm = (vn.id in noteRepo) ? repoComm[noteRepo[vn.id]] : SHARED_DOC_COMM;
     const nn = { ...vn, repo: "vault-docs", community: comm };
     seen.set(vn.id, nn);
