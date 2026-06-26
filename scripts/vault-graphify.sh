@@ -46,6 +46,7 @@ SHADOW=0
 NO_HOOKS=0
 HOOKS_ONLY=0
 TRACK=0
+LIST=0
 ONLY_REPO=""
 
 while [[ $# -gt 0 ]]; do
@@ -54,6 +55,7 @@ while [[ $# -gt 0 ]]; do
     --no-hooks)   NO_HOOKS=1 ;;
     --hooks-only) HOOKS_ONLY=1 ;;
     --track)      TRACK=1 ;;
+    --list)       LIST=1 ;;   # print "tag<TAB>path" for every project; no extraction
     --repo)       ONLY_REPO="${2:-}"; shift ;;
     *) echo "vault-graphify: unknown arg '$1'" >&2; exit 2 ;;
   esac
@@ -71,6 +73,8 @@ fi
 ingest() {
   local path="$1" tag="$2" is_git="$3"
   [[ -d "$path" ]] || { log "skip $tag: $path missing"; return; }
+
+  if [[ $LIST -eq 1 ]]; then printf '%s\t%s\t%s\n' "$tag" "$path" "$is_git"; return; fi
 
   if [[ $HOOKS_ONLY -eq 1 ]]; then
     [[ $is_git -eq 1 ]] && { install_freshness_hook "$path" "$tag" && log "freshness hook → $tag" || log "WARN hook $tag"; }
@@ -101,7 +105,39 @@ ingest() {
     if [[ -f "$excl" ]] && ! grep -qx 'graphify-out/' "$excl" 2>/dev/null; then
       printf 'graphify-out/\n' >> "$excl"
     fi
+  elif [[ $is_git -eq 0 ]]; then
+    # No .git -> no post-commit freshness hook is possible. Leave a graphify.md
+    # spelling out the manual refresh commands so a non-git project doesn't go stale
+    # silently; once the dir becomes a git repo, a normal run installs the auto hook.
+    write_manual_refresh_note "$path" "$tag"
   fi
+}
+
+# Drop a graphify.md in a non-git project: how to refresh its graph + federation by
+# hand (the auto post-commit hook needs .git). Idempotent — rewrites our own block.
+write_manual_refresh_note() {
+  local path="$1" tag="$2"
+  cat > "$path/graphify.md" <<EOF
+# graphify — manual refresh
+
+This folder has no \`.git\`, so the automatic post-commit freshness hook can't be
+installed. Refresh its knowledge-graph + the federated global graph by hand:
+
+\`\`\`sh
+cd "$path"
+graphify update .                                    # rebuild this graph (AST, no LLM)
+graphify global add graphify-out/graph.json --as $tag  # merge into the federation
+\`\`\`
+
+To re-extract with the LLM backend (richer, slower):
+
+\`\`\`sh
+vault-graphify.sh --repo $tag
+\`\`\`
+
+Once you \`git init\` here, run \`vault-graphify.sh --repo $tag\` once and the
+post-commit hook will keep both graphs current automatically.
+EOF
 }
 
 # Install our post-commit hook: rebuild this repo's graph (AST, no LLM) AND
@@ -160,13 +196,34 @@ HOOK
   fi
 }
 
-# --- repos under ~/projects (git only) ---
+# --- everything under ~/projects (git or not, any depth) ---
+# Project unit = each git repo at ANY depth (its own tag/colour/vault note), PLUS any
+# top-level dir that is neither a git repo nor a container of nested git repos (e.g.
+# a plain folder of files) ingested whole as one project. So nothing under ~/projects
+# is skipped for lacking .git or for being nested. Tag = project dir basename.
+maybe_ingest() { # path tag is_git — applies the --repo filter
+  local p="$1" t="$2" g="$3"
+  [[ -n "$ONLY_REPO" && "$ONLY_REPO" != "$t" ]] && return
+  ingest "$p" "$t" "$g"
+}
 run_repos() {
+  local d repo gd found
   for d in "$REPOS_DIR"/*/; do
-    [[ -d "$d/.git" ]] || continue
-    local name; name="$(basename "$d")"
-    [[ -n "$ONLY_REPO" && "$ONLY_REPO" != "$name" ]] && continue
-    ingest "${d%/}" "$name" 1
+    d="${d%/}"
+    if [[ -d "$d/.git" ]]; then
+      maybe_ingest "$d" "$(basename "$d")" 1
+      continue
+    fi
+    # find nested git repos at any depth (prune so we don't recurse into a repo's
+    # own .git or into an already-found repo's subtree)
+    found=0
+    while IFS= read -r gd; do
+      repo="$(dirname "$gd")"
+      maybe_ingest "$repo" "$(basename "$repo")" 1
+      found=1
+    done < <(find "$d" -type d -name .git -prune 2>/dev/null)
+    # plain non-git dir with no nested repos -> ingest the whole dir as one project
+    [[ $found -eq 0 ]] && maybe_ingest "$d" "$(basename "$d")" 0
   done
 }
 
