@@ -136,7 +136,7 @@ if (DRY) { console.log("\n--dry: nothing written."); process.exit(0); }
 // Content-based: each community is named after its highest-degree node + dominant
 // repo tag. The vault-docs bundle gets a fixed legible name. Deterministic, no LLM.
 // Writes <outDir>/.graphify_labels.json, which `graphify export html` reads.
-function nameCommunities(outDir) {
+function nameCommunities(outDir, { byRepo = false } = {}) {
   const gp = path.join(outDir, "graph.json");
   const gg = JSON.parse(fs.readFileSync(gp, "utf8"));
   const ek = gg.links ? "links" : "edges";
@@ -156,6 +156,8 @@ function nameCommunities(outDir) {
       labels[c] = grp.length > 1 ? `Vault Projects / docs (+${grp.length - 1})` : "Vault Projects / docs";
       continue;
     }
+    // colour-by-repo merged view: one community per repo, labelled with the repo
+    if (byRepo) { labels[c] = ranked.length ? ranked[0][0] : `community ${c}`; continue; }
     const hub = grp.slice().sort((a, b) =>
       ((d[b.id] || 0) - (d[a.id] || 0)) || (a.id < b.id ? 1 : -1))[0];
     let tag = "";
@@ -267,21 +269,23 @@ if (!NO_HTML) {
   // ONE Projects tree. No cluster-only — that re-segmented the union and erased the
   // master structure. Per-repo community ints collide, so remap each repo's to a
   // unique global range; all vault-doc nodes share one community/colour.
+  // Colour by repo: one community per repo (so all of a repo's nodes share a
+  // colour), vault docs share one. The Project tree dedups by id across repos.
   const seen = new Map();           // node id -> kept node
   const linkSeen = new Set();
   const mergedNodes = [], mergedLinks = [];
+  const repoComm = {};              // repo tag -> colour community id
   let commBase = 1;
   const SHARED_DOC_COMM = 0;
   for (const m of matches) {
     if (!m.note || !m.anchor) continue;
     const c = buildRepoCombined(m);
     if (!c) continue;
-    const remap = {};               // this repo's local community -> unique global
     for (const n of c.nodes) {
       if (seen.has(n.id)) continue; // vault MOC/area shared across repos -> keep once
       let comm;
       if (n.repo === "vault-docs") comm = SHARED_DOC_COMM;
-      else { if (!(n.community in remap)) remap[n.community] = commBase++; comm = remap[n.community]; }
+      else { const r = n.repo || n.id.split("::")[0]; if (!(r in repoComm)) repoComm[r] = commBase++; comm = repoComm[r]; }
       const nn = { ...n, community: comm };
       seen.set(n.id, nn);
       mergedNodes.push(nn);
@@ -296,9 +300,9 @@ if (!NO_HTML) {
   const bridged = { directed: !!g.directed, multigraph: false, graph: {}, nodes: mergedNodes, links: mergedLinks };
   fs.mkdirSync(BRIDGED_OUT, { recursive: true });
   fs.writeFileSync(path.join(BRIDGED_OUT, "graph.json"), JSON.stringify(bridged));
-  console.log(`\nmerged graph.json: ${mergedNodes.length} nodes, ${mergedLinks.length} edges (union of per-repo; shared Projects tree, no cluster-only)`);
+  console.log(`\nmerged graph.json: ${mergedNodes.length} nodes, ${mergedLinks.length} edges (union of per-repo; coloured by repo)`);
   try {
-    nameCommunities(BRIDGED_OUT);
+    nameCommunities(BRIDGED_OUT, { byRepo: true });
     exportHtml(BRIDGED_DIR);
     console.log(`merged graph.html: ${path.join(BRIDGED_OUT, "graph.html")}`);
   } catch (e) {
