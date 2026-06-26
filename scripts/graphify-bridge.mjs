@@ -59,13 +59,15 @@ const NO_REPOS = args.has("--no-repos");
 // automatically below; this table holds the fuzzy ones + area-note fallbacks for
 // repos with no dedicated Project note yet.
 const OVERRIDES = {
-  "k3s-cluster": "Projects/Cluster infra in git.md",
-  // area fallbacks (no dedicated project note) — keep the repo connected to the
-  // Projects graph via its area MOC until a real note exists.
-  "social-update": "Projects/Software Engineering/Software Engineering.md",
-  "tradingview-mcp": "Projects/Trading/Trading.md",
-  "vaultwarden": "Projects/Homelab/Homelab.md",
-  "apps-page": "Projects/Software Business/Software Business.md",
+  "k3s-cluster": "Projects/Cluster infra in git.md", // no dedicated <repo>.md note
+  // browser-extensions: four separate repos, one shared vault counterpart note
+  "series-auto-skip": "Projects/Software Engineering/Browser Extensions.md",
+  "uninsta": "Projects/Software Engineering/Browser Extensions.md",
+  "undiscord": "Projects/Software Engineering/Browser Extensions.md",
+  "filelist-ext": "Projects/Software Engineering/Browser Extensions.md",
+  "TE": "Projects/Software Business/No7 Portal Migration.md",
+  // (apps-page, vaultwarden, tradingview-mcp, social-update now have dedicated
+  //  Projects/**/<repo>.md notes, so they auto-match by name — no override needed.)
 };
 
 const vaultPath = execSync(`realpath "${HOME}/obsidian.md"`).toString().trim();
@@ -170,9 +172,14 @@ function nameCommunities(outDir, { byRepo = false } = {}) {
   return Object.keys(labels).length;
 }
 
+const VIZ_NODE_LIMIT = process.env.GRAPHIFY_VIZ_NODE_LIMIT || "200000";
 function exportHtml(workDir) {
-  // `graphify export html` reads <cwd>/graphify-out/graph.json + .graphify_labels.json
-  execSync(`"${GRAPHIFY}" export html`, { cwd: workDir, stdio: "ignore" });
+  // `graphify export html` reads <cwd>/graphify-out/graph.json + .graphify_labels.json.
+  // Above its node-limit (CLI default 5000, env GRAPHIFY_VIZ_NODE_LIMIT ignored on this
+  // path) it collapses the graph to a one-node-per-community meta-graph. The merged
+  // vault+repos graph blows past 5000, so pass --node-limit to keep the FULL node set in
+  // graph.html (we want the big graph; viz perf is the browser's problem).
+  execSync(`"${GRAPHIFY}" export html --node-limit ${VIZ_NODE_LIMIT}`, { cwd: workDir, stdio: "ignore" });
   pinLayoutSeed(path.join(workDir, "graphify-out", "graph.html"));
 }
 
