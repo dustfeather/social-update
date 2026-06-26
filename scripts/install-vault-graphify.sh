@@ -24,6 +24,36 @@ fi
 pipx inject graphifyy anthropic >/dev/null 2>&1 || true
 echo "graphify: $(graphify --version 2>/dev/null || echo present)"
 
+# 1b. MCP-off patch (idempotent) ------------------------------------------
+# graphify's claude-cli backend shells `claude -p`, which otherwise boots the
+# user's FULL MCP stack (serena/context-mode/headroom/code-review-graph) on
+# EVERY chunk — ~80s/call and it stalls under repeated invocation. Extraction
+# needs no MCP, so we inject --strict-mcp-config. Cuts a call ~80s -> ~3s.
+# Re-apply after every `pipx upgrade graphifyy` (the venv file is overwritten).
+# Opt out at runtime with GRAPHIFY_KEEP_MCP=1.
+python3 - <<'PY' || echo "WARN: MCP-off patch skipped (graphify internals changed?)"
+from pathlib import Path
+import glob, os
+hits = glob.glob(os.path.expanduser("~/.local/share/pipx/venvs/graphifyy/lib/python*/site-packages/graphify/llm.py"))
+if not hits:
+    print("llm.py not found"); raise SystemExit(0)
+f = Path(hits[0]); s = f.read_text()
+marker = "vault-keeper: graphify extraction needs no MCP"
+if marker in s:
+    print("MCP-off patch already present"); raise SystemExit(0)
+needle = '        "--no-session-persistence",\n        *add_dir_args,'
+if needle not in s:
+    print("needle absent — graphify internals changed; patch NOT applied"); raise SystemExit(0)
+repl = ('        "--no-session-persistence",\n'
+        '        # ' + marker + ': disable the user MCP stack so each\n'
+        '        # claude -p does not boot serena/context-mode (stalls under repeated\n'
+        '        # invocation). Set GRAPHIFY_KEEP_MCP=1 to opt out.\n'
+        '        *([] if os.environ.get("GRAPHIFY_KEEP_MCP", "").strip() == "1"\n'
+        '          else ["--strict-mcp-config", "--mcp-config", \'{"mcpServers":{}}\']),\n'
+        '        *add_dir_args,')
+f.write_text(s.replace(needle, repl, 1)); print("MCP-off patch applied")
+PY
+
 # 2. global /graphify skill ------------------------------------------------
 # Writes ~/.claude/skills/graphify/, a CLAUDE.md directive, and a PreToolUse
 # hook that consults graphify-out before Glob/Grep. Edits the curated global
