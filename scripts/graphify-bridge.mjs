@@ -172,7 +172,7 @@ function nameCommunities(outDir, { byRepo = false } = {}) {
     for (const n of grp) if (n.repo) repoCount[n.repo] = (repoCount[n.repo] || 0) + 1;
     const ranked = Object.entries(repoCount).sort((a, b) => b[1] - a[1]);
     if (ranked.length && ranked[0][0] === "vault-docs") {
-      labels[c] = grp.length > 1 ? `Vault Projects / docs (+${grp.length - 1})` : "Vault Projects / docs";
+      labels[c] = grp.length > 1 ? `Obsidian Vault (+${grp.length - 1})` : "Obsidian Vault";
       continue;
     }
     // colour-by-repo merged view: one community per repo, labelled with the repo
@@ -510,6 +510,35 @@ if (!NO_HTML) {
     if (linkSeen.has(k)) continue;
     linkSeen.add(k);
     mergedLinks.push(e);
+  }
+  // Vault hub: a note with no wikilink in/out and not in any repo's Project ancestry
+  // ends up with zero edges and floats off alone. Add ONE synthetic "Obsidian Vault"
+  // root, give every such orphan a spoke to it, and tie the root into the Projects MOC
+  // (already wired to the repo masters) so the whole vault — orphans included — hangs
+  // off the main graph instead of scattering.
+  {
+    const deg = {};
+    for (const e of mergedLinks) { deg[e.source] = (deg[e.source] || 0) + 1; deg[e.target] = (deg[e.target] || 0) + 1; }
+    const VAULT_ROOT_ID = "vault::__root__";
+    const orphanLinks = [];
+    for (const n of mergedNodes) {
+      if (n.repo !== "vault-docs" || n.id === VAULT_ROOT_ID) continue;
+      if ((deg[n.id] || 0) > 0) continue; // already connected via wikilink/ancestry/bridge
+      orphanLinks.push({ source: VAULT_ROOT_ID, target: n.id, relation: "vault-root",
+        confidence: "BRIDGE", weight: 1, confidence_score: 1 });
+    }
+    if (orphanLinks.length) {
+      const vaultRoot = { id: VAULT_ROOT_ID, label: "Obsidian Vault", repo: "vault-docs",
+        file_type: "vault-root", _origin: "vault-root", community: SHARED_DOC_COMM,
+        source_file: null, source_location: null };
+      seen.set(VAULT_ROOT_ID, vaultRoot);
+      mergedNodes.push(vaultRoot);
+      const moc = vaultByFile["Projects/Projects.md"]; // anchor the hub into the connected graph
+      if (moc && seen.has(moc.id)) mergedLinks.push({ source: VAULT_ROOT_ID, target: moc.id,
+        relation: "vault-root", confidence: "BRIDGE", weight: 1, confidence_score: 1 });
+      for (const e of orphanLinks) mergedLinks.push(e);
+      console.log(`vault hub: linked ${orphanLinks.length} orphaned vault notes to "Obsidian Vault" root`);
+    }
   }
   const bridged = { directed: !!g.directed, multigraph: false, graph: {}, nodes: mergedNodes, links: mergedLinks };
   fs.mkdirSync(BRIDGED_OUT, { recursive: true });
