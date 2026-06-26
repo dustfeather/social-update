@@ -112,7 +112,8 @@ for (const n of vaultDocs) {
 const NOISE = [
   /\.json$/,                                    // package/tsconfig/*.schema/manifest/data — key-explosion
   /(pnpm-lock\.yaml|yarn\.lock|bun\.lockb?|Cargo\.lock|poetry\.lock|composer\.lock|Gemfile\.lock|go\.sum)$/,
-  /(^|\/)\.github\//,                            // CI workflows
+  /(^|\/)\.github\/(?!workflows\/)/,             // .github noise (templates, dependabot) — but KEEP
+                                                 // workflows/: they tie repos to k3s (runs-on: arc-*, kubectl)
   /(^|\/)\.[^/]*rc(\.[^/]*)?$/,                  // .eslintrc/.prettierrc/.babelrc/.npmrc/.nvmrc...
   /(^|\/)(eslint|prettier|jest|vitest|babel|postcss|tailwind|vite|rollup|webpack|tsup|next)\.config\.[cm]?[jt]s$/,
   /\.(test|spec)\.[cm]?[jt]sx?$/,               // js/ts unit tests
