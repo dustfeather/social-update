@@ -38,8 +38,14 @@ if [ -n "$CDP" ]; then
   if ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
     CHROME="$(command -v chromium || command -v chromium-browser || command -v google-chrome || echo /snap/bin/chromium)"
     echo "claude-web: starting $CHROME on :$PORT (profile $PROFILE)"
+    # Park the window off-screen so it doesn't pop up on the Windows desktop.
+    # WSLg has no usable WM (no wmctrl/xdotool, Weston ignores X11 iconify), and
+    # Xvfb/cage are dead ends here (claude.ai Turnstile blocks headless), so an
+    # off-screen geometry is the only no-deps "minimize". Stays parked until the
+    # EXIT trap below closes the whole browser.
     setsid "$CHROME" --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
-      --no-first-run --no-default-browser-check >/tmp/social-collect-chrome.log 2>&1 &
+      --no-first-run --no-default-browser-check \
+      --window-position=-32000,-32000 --window-size=1,1 >/tmp/social-collect-chrome.log 2>&1 &
     CHROME_LEADER=$!   # setsid makes this the session/process-group leader
     disown 2>/dev/null || true
     # Close the entire browser (not just the claude-web tab) when this run ends,
