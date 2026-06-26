@@ -175,6 +175,53 @@ function exportHtml(workDir) {
   execSync(`"${GRAPHIFY}" export html`, { cwd: workDir, stdio: "ignore" });
 }
 
+// graphify colours by COMMUNITY_COLORS[cid % 10] — only 10 colours, so the merged
+// graph's 14 repo-communities collide (cid 10..13 reuse 0..3). Repaint the exported
+// HTML with a STABLE per-repo colour (hash the repo name -> hue, so a repo keeps its
+// colour no matter how many repos exist or their order). Vault docs = fixed grey.
+function hslHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  let r, g, b;
+  if (h < 60) [r, g, b] = [c, x, 0]; else if (h < 120) [r, g, b] = [x, c, 0];
+  else if (h < 180) [r, g, b] = [0, c, x]; else if (h < 240) [r, g, b] = [0, x, c];
+  else if (h < 300) [r, g, b] = [x, 0, c]; else [r, g, b] = [c, 0, x];
+  const to = (v) => ("0" + Math.round((v + m) * 255).toString(16)).slice(-2);
+  return "#" + to(r) + to(g) + to(b);
+}
+function repoColor(name) {
+  if (!name || /Vault Projects/.test(name)) return "#9aa0a6"; // vault docs -> grey
+  let h = 2166136261;                                          // FNV-1a -> hue
+  for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return hslHex((h >>> 0) % 360, 0.62, 0.55);
+}
+// Replace a `const NAME = [ ... ];` JSON array literal in the HTML via bracket match.
+function spliceJsonArray(s, marker, mutate) {
+  const at = s.indexOf(marker);
+  if (at < 0) return s;
+  const start = s.indexOf("[", at);
+  let i = start, depth = 0, inStr = false, q = "", esc = false;
+  for (; i < s.length; i++) {
+    const ch = s[i];
+    if (inStr) { if (esc) esc = false; else if (ch === "\\") esc = true; else if (ch === q) inStr = false; }
+    else if (ch === '"' || ch === "'") { inStr = true; q = ch; }
+    else if (ch === "[") depth++;
+    else if (ch === "]") { if (--depth === 0) { i++; break; } }
+  }
+  let arr;
+  try { arr = JSON.parse(s.slice(start, i)); } catch (e) { console.log(`repalette: parse failed for ${marker} (${e.message})`); return s; }
+  mutate(arr);
+  return s.slice(0, start) + JSON.stringify(arr) + s.slice(i);
+}
+function repaletteByRepo(htmlPath) {
+  let s = fs.readFileSync(htmlPath, "utf8");
+  s = spliceJsonArray(s, "const RAW_NODES = ", (arr) => {
+    for (const n of arr) { const c = repoColor(n.community_name);
+      n.color = { background: c, border: c, highlight: { background: "#ffffff", border: c } }; }
+  });
+  s = spliceJsonArray(s, "const LEGEND = ", (arr) => { for (const e of arr) e.color = repoColor(e.label); });
+  fs.writeFileSync(htmlPath, s);
+}
+
 // A repo attaches ONLY to its own Project note + the ancestry up to the MOC
 // (project -> area MOC -> Projects MOC), derived by PATH so no sibling projects
 // leak in. e.g. Projects/Software Business/Flotila.md ->
@@ -274,9 +321,16 @@ if (!NO_HTML) {
   const seen = new Map();           // node id -> kept node
   const linkSeen = new Set();
   const mergedNodes = [], mergedLinks = [];
+  const SHARED_DOC_COMM = 0;        // shared area/MOC vault nodes -> one (grey) community
   const repoComm = {};              // repo tag -> colour community id
   let commBase = 1;
-  const SHARED_DOC_COMM = 0;
+  const noteRepo = {};              // a repo's Project-note id -> that repo (share its colour)
+  for (const m of matches) {
+    if (!m.note || !m.anchor) continue;
+    if (!(m.repo in repoComm)) repoComm[m.repo] = commBase++;
+    const vn = vaultByFile[m.note];
+    if (vn) noteRepo[vn.id] = m.repo;
+  }
   for (const m of matches) {
     if (!m.note || !m.anchor) continue;
     const c = buildRepoCombined(m);
@@ -284,7 +338,8 @@ if (!NO_HTML) {
     for (const n of c.nodes) {
       if (seen.has(n.id)) continue; // vault MOC/area shared across repos -> keep once
       let comm;
-      if (n.repo === "vault-docs") comm = SHARED_DOC_COMM;
+      if (n.repo === "vault-docs")  // a repo's own Project note joins its repo's colour;
+        comm = (n.id in noteRepo) ? repoComm[noteRepo[n.id]] : SHARED_DOC_COMM; // areas/MOC stay grey
       else { const r = n.repo || n.id.split("::")[0]; if (!(r in repoComm)) repoComm[r] = commBase++; comm = repoComm[r]; }
       const nn = { ...n, community: comm };
       seen.set(n.id, nn);
@@ -304,6 +359,7 @@ if (!NO_HTML) {
   try {
     nameCommunities(BRIDGED_OUT, { byRepo: true });
     exportHtml(BRIDGED_DIR);
+    repaletteByRepo(path.join(BRIDGED_OUT, "graph.html")); // 14 stable per-repo colours (graphify's palette only has 10)
     console.log(`merged graph.html: ${path.join(BRIDGED_OUT, "graph.html")}`);
   } catch (e) {
     console.log(`WARN: merged render failed (${e.message}); graph.json is written.`);
