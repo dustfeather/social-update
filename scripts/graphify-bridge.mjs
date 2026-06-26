@@ -358,6 +358,52 @@ function buildRepoCombined(m) {
   };
 }
 
+// Parse the vault's [[wikilink]] web straight from the .md files. graphify's own
+// extraction only emits a fraction of them as `references` edges (62 of ~343), so we
+// build the real note->note link graph ourselves: complete, deterministic, no LLM.
+// Returns edges between vault FILE nodes (resolved via vaultByFile); media embeds and
+// links to non-existent notes resolve to nothing and are skipped.
+function vaultWikilinkEdges() {
+  let files = [];
+  try {
+    files = execSync(`cd "${vaultPath}" && find . -name '*.md' -not -path './.obsidian/*' -not -path './.trash/*'`)
+      .toString().trim().split("\n").filter(Boolean).map((f) => f.replace(/^\.\//, ""));
+  } catch { return []; }
+  // resolvers: Obsidian links by note basename (case-insensitive) or by relative path
+  const byBase = {}, byPath = {};
+  for (const f of Object.keys(vaultByFile)) {
+    byPath[f.toLowerCase()] = f;
+    byPath[f.toLowerCase().replace(/\.md$/, "")] = f;
+    const b = path.basename(f, ".md").toLowerCase();
+    if (!(b in byBase)) byBase[b] = f; // first wins; basename collisions are rare here
+  }
+  const resolve = (target) => {
+    const t = target.split("|")[0].split("#")[0].trim(); // strip alias + heading/block ref
+    if (!t) return null;
+    const tl = t.toLowerCase();
+    if (t.includes("/")) return byPath[tl] || byPath[tl + ".md"] || null;
+    return byBase[tl] || byPath[tl] || byPath[tl + ".md"] || null;
+  };
+  const edges = [];
+  const re = /!?\[\[([^\]]+)\]\]/g;
+  for (const f of files) {
+    const src = vaultByFile[f];
+    if (!src) continue; // note produced no graphify node
+    let body = "";
+    try { body = fs.readFileSync(path.join(vaultPath, f), "utf8"); } catch { continue; }
+    let mm;
+    while ((mm = re.exec(body))) {
+      const tf = resolve(mm[1]);
+      if (!tf || tf === f) continue; // unresolved (media / missing note) or self-link
+      const dst = vaultByFile[tf];
+      if (!dst) continue;
+      edges.push({ source: src.id, target: dst.id, relation: "wikilink",
+        confidence: "BRIDGE", weight: 1, confidence_score: 1 });
+    }
+  }
+  return edges;
+}
+
 // ---------- 1. per-repo bridged graphs (primary view) ----------
 if (!NO_HTML && !NO_REPOS) {
   let built = 0;
@@ -423,10 +469,28 @@ if (!NO_HTML) {
       mergedLinks.push(e);
     }
   }
+  // Fold in the FULL vault: every note as a node (file-level, not headings) plus its
+  // real [[wikilink]] web. Notes already pulled in as a repo's bridge target keep their
+  // repo colour; the rest share the grey "Vault Projects / docs" community.
+  for (const f of Object.keys(vaultByFile)) {
+    const vn = vaultByFile[f];
+    if (seen.has(vn.id)) continue; // already added via a repo bridge
+    const comm = (vn.id in noteRepo) ? repoComm[noteRepo[vn.id]] : SHARED_DOC_COMM;
+    const nn = { ...vn, repo: "vault-docs", community: comm };
+    seen.set(vn.id, nn);
+    mergedNodes.push(nn);
+  }
+  for (const e of vaultWikilinkEdges()) {
+    if (!seen.has(e.source) || !seen.has(e.target)) continue; // endpoint outside the graph
+    const k = `${e.source} ${e.target} ${e.relation}`;
+    if (linkSeen.has(k)) continue;
+    linkSeen.add(k);
+    mergedLinks.push(e);
+  }
   const bridged = { directed: !!g.directed, multigraph: false, graph: {}, nodes: mergedNodes, links: mergedLinks };
   fs.mkdirSync(BRIDGED_OUT, { recursive: true });
   fs.writeFileSync(path.join(BRIDGED_OUT, "graph.json"), JSON.stringify(bridged));
-  console.log(`\nmerged graph.json: ${mergedNodes.length} nodes, ${mergedLinks.length} edges (union of per-repo; coloured by repo)`);
+  console.log(`\nmerged graph.json: ${mergedNodes.length} nodes, ${mergedLinks.length} edges (union of per-repo + full vault wikilink web; coloured by repo)`);
   try {
     nameCommunities(BRIDGED_OUT, { byRepo: true });
     exportHtml(BRIDGED_DIR);
