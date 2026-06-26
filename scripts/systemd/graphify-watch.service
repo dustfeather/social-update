@@ -1,0 +1,17 @@
+[Unit]
+Description=graphify-watch — re-bridge repo graphs to the vault Projects graph on any repo commit (watches the federated global-graph.json; the vault side is the vault-repos timer)
+After=default.target
+
+[Service]
+Type=simple
+# node is nvm-managed and not on the systemd login PATH, so source nvm (resolves
+# the default node, survives node upgrades) before exec. graphify is pinned to an
+# absolute path inside the .mjs. HOME is needed for ~/.graphify + ~/.nvm.
+Environment=HOME=%h
+ExecStart=/bin/bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; exec node %h/projects/social-update/scripts/graphify-watch.mjs'
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=graphify-watch
+
+[Install]
+WantedBy=default.target
