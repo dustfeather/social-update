@@ -1,0 +1,18 @@
+[Unit]
+Description=graphify-serve — live incrementally-updating web view of the merged bridged graph (streams node/edge deltas over SSE as graph.html is rebuilt)
+After=default.target
+
+[Service]
+Type=simple
+# node is nvm-managed and not on the systemd login PATH, so source nvm (resolves
+# the default node, survives node upgrades) before exec. HOME is needed for the
+# ~/.graphify/bridged/graphify-out/graph.html input. Override the port with PORT=.
+Environment=HOME=%h
+Environment=PORT=8088
+ExecStart=/bin/bash -lc 'export NVM_DIR="$HOME/.nvm"; [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"; exec node %h/projects/social-update/scripts/graphify-serve.mjs'
+Restart=on-failure
+RestartSec=10
+SyslogIdentifier=graphify-serve
+
+[Install]
+WantedBy=default.target
