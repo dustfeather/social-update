@@ -199,25 +199,50 @@ if (!NO_HTML && !NO_REPOS) {
     if (!vnode) continue;
     const repoNodes = byRepo[m.repo];
     const repoIds = new Set(repoNodes.map((n) => n.id));
-    // just this repo's Project note + its ancestry chain (no sibling projects),
-    // in one fresh community -> renders as a small "Vault Projects / docs" group.
-    const chain = ancestry(m.note).map((p) => vaultByFile[p]).filter(Boolean);
+    const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
+
+    // Repo MASTER node: a single synthetic hub that every community hangs off (via
+    // its highest-degree node), so the graph reads as a star — master -> per-module
+    // hub -> internals — instead of many loose [repo] islands. The master is what
+    // bridges up to the Project note.
+    const rdeg = {};
+    for (const e of repoLinks) { rdeg[e.source] = (rdeg[e.source] || 0) + 1; rdeg[e.target] = (rdeg[e.target] || 0) + 1; }
+    const commHub = {};
+    for (const n of repoNodes) {
+      const c = n.community;
+      if (c == null) continue;
+      if (!commHub[c] || (rdeg[n.id] || 0) > (rdeg[commHub[c].id] || 0)) commHub[c] = n;
+    }
     const repoComms = repoNodes.map((n) => n.community).filter((c) => typeof c === "number");
     const docComm = (repoComms.length ? Math.max(...repoComms) : 0) + 1;
+    const masterComm = docComm + 1;
+    const masterId = `${m.repo}::__repo__`;
+    const masterNode = {
+      id: masterId, label: m.repo, repo: m.repo, file_type: "repo",
+      _origin: "master", community: masterComm, source_file: null, source_location: null,
+    };
+    const masterLinks = Object.values(commHub).map((h) => ({
+      relation: "module", confidence: "BRIDGE", weight: 1.5, confidence_score: 1,
+      source: masterId, target: h.id,
+    }));
+
+    // this repo's Project note + its ancestry chain (no sibling projects), in one
+    // fresh community -> renders as a small "Vault Projects / docs" group.
+    const chain = ancestry(m.note).map((p) => vaultByFile[p]).filter(Boolean);
     const docNodes = chain.map((n) => ({ ...n, repo: "vault-docs", _origin: "vault", community: docComm }));
-    const repoLinks = links.filter((e) => repoIds.has(e.source) && repoIds.has(e.target));
-    // chain edges project -> area -> MOC so the path up the tree renders
     const chainLinks = [];
     for (let i = 0; i < chain.length - 1; i++)
       chainLinks.push({ relation: "in_parent", confidence: "BRIDGE", weight: 1, confidence_score: 1,
         source: chain[i].id, target: chain[i + 1].id });
+    // master -> Project note (the single bridge into the vault)
     const bridge = {
       relation: "documented_in", confidence: "BRIDGE", weight: 2, confidence_score: 1,
-      source: m.anchor.id, target: (chain[0] || vnode).id,
+      source: masterId, target: (chain[0] || vnode).id,
     };
     const combined = {
       directed: !!g.directed, multigraph: false, graph: {},
-      nodes: [...repoNodes, ...docNodes], links: [...repoLinks, ...chainLinks, bridge],
+      nodes: [...repoNodes, masterNode, ...docNodes],
+      links: [...repoLinks, ...masterLinks, ...chainLinks, bridge],
     };
     const outDir = path.join(REPO_BRIDGED, m.repo, "graphify-out");
     fs.mkdirSync(outDir, { recursive: true });
