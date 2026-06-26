@@ -177,23 +177,15 @@ function exportHtml(workDir) {
 
 // graphify colours by COMMUNITY_COLORS[cid % 10] — only 10 colours, so the merged
 // graph's 14 repo-communities collide (cid 10..13 reuse 0..3). Repaint the exported
-// HTML with a STABLE per-repo colour (hash the repo name -> hue, so a repo keeps its
-// colour no matter how many repos exist or their order). Vault docs = fixed grey.
-function hslHex(h, s, l) {
-  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
-  let r, g, b;
-  if (h < 60) [r, g, b] = [c, x, 0]; else if (h < 120) [r, g, b] = [x, c, 0];
-  else if (h < 180) [r, g, b] = [0, c, x]; else if (h < 240) [r, g, b] = [0, x, c];
-  else if (h < 300) [r, g, b] = [x, 0, c]; else [r, g, b] = [c, 0, x];
-  const to = (v) => ("0" + Math.round((v + m) * 255).toString(16)).slice(-2);
-  return "#" + to(r) + to(g) + to(b);
-}
-function repoColor(name) {
-  if (!name || /Vault Projects/.test(name)) return "#9aa0a6"; // vault docs -> grey
-  let h = 2166136261;                                          // FNV-1a -> hue
-  for (let i = 0; i < name.length; i++) { h ^= name.charCodeAt(i); h = Math.imul(h, 16777619); }
-  return hslHex((h >>> 0) % 360, 0.62, 0.55);
-}
+// HTML with a curated, max-distinct qualitative palette (spans the wheel; bright so
+// it pops on the near-black #0f0f1a background). Assigned by sorted repo index so
+// neighbours never read as the same hue. Vault MOC/areas = fixed grey.
+const REPO_PALETTE = [
+  "#e6194B", "#f58231", "#ffe119", "#bfef45", "#3cb44b", "#42d4f4", "#4363d8",
+  "#911eb4", "#f032e6", "#fabed4", "#469990", "#9A6324", "#aaffc3", "#dcbeff",
+  "#ff8c00", "#00fa9a", "#1e90ff", "#ff1493",
+];
+const VAULT_GREY = "#9aa0a6";
 // Replace a `const NAME = [ ... ];` JSON array literal in the HTML via bracket match.
 function spliceJsonArray(s, marker, mutate) {
   const at = s.indexOf(marker);
@@ -212,13 +204,14 @@ function spliceJsonArray(s, marker, mutate) {
   mutate(arr);
   return s.slice(0, start) + JSON.stringify(arr) + s.slice(i);
 }
-function repaletteByRepo(htmlPath) {
+function repaletteByRepo(htmlPath, colorMap) {
+  const colorOf = (name) => colorMap[name] || VAULT_GREY;
   let s = fs.readFileSync(htmlPath, "utf8");
   s = spliceJsonArray(s, "const RAW_NODES = ", (arr) => {
-    for (const n of arr) { const c = repoColor(n.community_name);
+    for (const n of arr) { const c = colorOf(n.community_name);
       n.color = { background: c, border: c, highlight: { background: "#ffffff", border: c } }; }
   });
-  s = spliceJsonArray(s, "const LEGEND = ", (arr) => { for (const e of arr) e.color = repoColor(e.label); });
+  s = spliceJsonArray(s, "const LEGEND = ", (arr) => { for (const e of arr) e.color = colorOf(e.label); });
   fs.writeFileSync(htmlPath, s);
 }
 
@@ -359,7 +352,11 @@ if (!NO_HTML) {
   try {
     nameCommunities(BRIDGED_OUT, { byRepo: true });
     exportHtml(BRIDGED_DIR);
-    repaletteByRepo(path.join(BRIDGED_OUT, "graph.html")); // 14 stable per-repo colours (graphify's palette only has 10)
+    // distinct colour per repo from the curated palette, by sorted repo index
+    const sortedRepos = [...new Set(matches.filter((m) => m.note && m.anchor).map((m) => m.repo))].sort();
+    const colorMap = {};
+    sortedRepos.forEach((r, i) => { colorMap[r] = REPO_PALETTE[i % REPO_PALETTE.length]; });
+    repaletteByRepo(path.join(BRIDGED_OUT, "graph.html"), colorMap);
     console.log(`merged graph.html: ${path.join(BRIDGED_OUT, "graph.html")}`);
   } catch (e) {
     console.log(`WARN: merged render failed (${e.message}); graph.json is written.`);
