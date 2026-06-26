@@ -1,0 +1,12 @@
+[Unit]
+Description=vault-keeper weekly LinkedIn drafter (distill the ISO week into post drafts)
+After=network-online.target vault-daily.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# HOME is required so the headless `claude` loads ~/.claude/settings.json
+# (bypassPermissions); the drafter also resolves the vault from it.
+Environment=HOME=%h
+ExecStart=/bin/bash -lc '%h/.local/bin/vault-weekly.sh'
+SyslogIdentifier=vault-weekly

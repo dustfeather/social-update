@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the vault-keeper weekly drafter Sunday evening (end of the ISO week, after the daily writer)
+
+[Timer]
+OnCalendar=Sun *-*-* 19:00:00
+# run after a missed window (WSL was down Sunday 19:00) instead of skipping the week.
+# After=vault-daily.service in the .service orders it behind the same-time daily run.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

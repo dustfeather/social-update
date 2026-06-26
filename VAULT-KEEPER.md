@@ -68,9 +68,22 @@ _Inbox   Daily Notes   Projects   Resources   Notes   System
 - Writes: `Projects/<page>` activity (daily) + decision log (append-only table) + **daily digest** into `Daily Notes/YYYY/MM/DD (Ddd).md` under managed `<!-- UPDATE:START -->…<!-- UPDATE:END -->`.
 - Maintains the **`Local Repos`** map: unmapped active repo → **auto-add best guess + disclose** in that day's note (`🆕 mapped repo X → Projects/Y — correct if wrong`).
 
-### 4.3 Weekly drafts
-- New timer, **Sunday 19:00** (after Sunday daily run; end of ISO week).
-- Model: **Opus 4.8**. Reuses `prompt.txt` → LinkedIn drafts into a **weekly note** `Daily Notes/YYYY/Www.md`.
+### 4.3 Weekly drafts — **BUILT** (slice 5)
+- New timer, **Sunday 19:00** (after Sunday daily run; end of ISO week). The `.service`
+  carries `After=vault-daily.service` so it orders behind the same-time daily run.
+- Model: **Opus 4.8**. Reuses `prompt.txt` → LinkedIn drafts into a **weekly note**
+  `Daily Notes/YYYY/Www.md`. Source: `src/vault-weekly.ts`; wrapper `scripts/vault-weekly.sh`;
+  installer `scripts/install-vault-weekly.sh`.
+- **Signal** (read-only, no model tools): the ISO week's seven **daily digest blocks**
+  (already distilled by slice 3) + a `git log` oneline backup across `~/projects/*` for the
+  week (so weeks the daily writer never ran still produce drafts) + the author's hand-curated
+  items from the note's manual block.
+- **Output**: a managed `<!-- vault-keeper:drafts:start -->…end -->` block, idempotent by ISO
+  week (re-run replaces it, never duplicates). A `<!-- vault-keeper:manual:start -->…end -->`
+  block is seeded on first write and **preserved verbatim** across regeneration — the author
+  pre-fills it; those items are fed in as the highest-priority signal.
+- ISO week + the seven calendar days are computed in UTC off the Bucharest calendar day, so DST
+  never shifts which day a date lands on. `--shadow` dumps to `.vault-keeper/shadow-<week>.md`.
 
 ### 4.4 Graphify (knowledge graph) — **BUILT** (slice 4)
 Built against graphify(y) **v0.8.x**; CLI reality differs from the original design,
@@ -149,7 +162,7 @@ Scripts: `scripts/install-vault-graphify.sh` (setup) + `scripts/vault-graphify.s
 2. ✅ **Inbox sorter service** (Haiku) — smallest end-to-end loop; validates 9p-poll + write-guard + Syncthing propagation.
 3. ✅ **Daily writer + ledger + write-guard hook** — shadow first-run → live. Project notes + decisions + daily digest.
 4. ✅ **Graphify** — install, federate (`--global`), per-repo post-commit freshness hooks. See §4.4.
-5. **Weekly drafts** (Opus) — Sunday timer, reuse `prompt.txt`. ← next
+5. ✅ **Weekly drafts** (Opus) — Sunday timer, reuse `prompt.txt`. See §4.3.
 
 ---
 
