@@ -11,7 +11,7 @@ ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 TAG=$(basename "$ROOT")
 LOG="$HOME/.cache/graphify-rebuild.log"; mkdir -p "$HOME/.cache"
 ( cd "$ROOT" \
-  && PYTHONHASHSEED=0 graphify update . \
+  && PYTHONHASHSEED=0 graphify update . --force \
   && graphify global add graphify-out/graph.json --as "$TAG" \
 ) >>"$LOG" 2>&1 &
 exit 0
