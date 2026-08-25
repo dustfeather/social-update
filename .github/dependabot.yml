@@ -1,0 +1,46 @@
+version: 2
+
+# Until this file existed the repo had security updates only: Dependabot opened
+# a PR when an advisory was published against something in a lockfile, and
+# nothing otherwise. That is why the only Dependabot PRs this repo has ever seen
+# are named `npm_and_yarn in /web for postcss - Update #<id>` -- the `for <pkg>`
+# suffix is the security-update job shape. Routine drift was never scanned.
+#
+# Majors are deliberately NOT ignored here, unlike in shared-workflows. That
+# repo re-points a floating v4 tag on every push, so a merged major reaches
+# every consumer with no gate; this is a leaf repo where a merge ships nothing
+# on its own, so a major PR is just a prompt to read a changelog.
+
+updates:
+  # Two npm manifests: the service at the root and the Vite frontend in /web.
+  # They have separate lockfiles, so a bump in one never conflicts with the
+  # other -- no consolidation needed when several land at once.
+  - package-ecosystem: npm
+    directories:
+      - "/"
+      - "/web"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
+
+  # Every `uses:` in this repo now points at dustfeather/shared-workflows, so
+  # this block exists to catch that pin going to a new major. The pin is a bare
+  # floating major (@v4), which every v4.x release already satisfies, so a major
+  # is the only update it can ever produce -- which is exactly the one worth
+  # being told about.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 3
