@@ -2,6 +2,9 @@
   "name": "social-update",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=26"
+  },
   "description": "Local social journal — collect daily activity, generate copy-ready LinkedIn drafts.",
   "type": "commonjs",
   "scripts": {

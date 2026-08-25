@@ -1,6 +1,9 @@
 # ---- builder: compile backend (tsc -> dist/) + frontend (vite -> web/dist) ----
 # No native toolchain: SQLite is the built-in node:sqlite module, nothing to compile.
-FROM node:24-bookworm-slim AS builder
+# That is also why this tracks Node 26 rather than waiting for its October 2026
+# LTS date -- the usual reason to hold a major back is native addons compiling
+# against removed V8 APIs, and there is nothing here to compile.
+FROM node:26-bookworm-slim AS builder
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -26,7 +29,7 @@ RUN npm --prefix web ci && npm --prefix web run build
 RUN npm ci --omit=dev
 
 # ---- runtime: node + prod deps + static UI + Claude CLI, no toolchain, non-root ----
-FROM node:24-bookworm-slim
+FROM node:26-bookworm-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ca-certificates \
   && rm -rf /var/lib/apt/lists/*
@@ -49,9 +52,19 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/agent agent \
   && mkdir -p /data \
   && chown -R 10001:10001 /data /home/agent
-# node:sqlite is still flagged experimental; silence its one-line startup warning.
+# node:sqlite is stable as of Node 26, so there is no experimental warning left to
+# silence. The NODE_OPTIONS suppression that used to live here is deliberately
+# gone rather than kept "just in case": it muted EVERY ExperimentalWarning, so
+# leaving it would hide the next module that starts emitting one.
+#
+# DOTENV_CONFIG_QUIET is for dotenv 17, whose sole breaking change was defaulting
+# `quiet` to false. Nine modules call config() at import time and `.env` is
+# dockerignored, so without this each one logs `injected env (0) from .env` on
+# startup -- accurate, but it reads like a config failure when prod config
+# actually comes from ENV above and the k8s Secret. One variable covers all nine
+# call sites, and 16.x simply ignores it, so it is safe in either version.
 ENV HOME=/home/agent NODE_ENV=production DB_PATH=/data/social.sqlite \
-    NODE_OPTIONS=--disable-warning=ExperimentalWarning
+    DOTENV_CONFIG_QUIET=true
 USER 10001
 EXPOSE 4000
 CMD ["node", "dist/server.js"]
