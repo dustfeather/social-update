@@ -24,68 +24,69 @@ jobs:
     with:
       runner: arc-df-social-update
 
-  deploy:
+  # Separate job because a called workflow may not request more GITHUB_TOKEN
+  # permission than the calling job grants, and `permissions:` accepts no
+  # expressions -- so the build's `packages: write` cannot be made conditional
+  # inside deploy-k8s.yml without every non-building caller failing validation.
+  #
+  # image-repo and image-tag stay empty: build-push-image derives
+  # ghcr.io/<owner>/<repo>:<sha> lowercased, identical to what the old inline
+  # "Compute image tag" step produced.
+  build:
     needs: tests
-    runs-on: arc-df-social-update
     permissions:
       contents: read
       packages: write
-    steps:
-      - uses: actions/checkout@v6
+    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v4
+    with:
+      runner: arc-df-social-update
 
-      - name: Compute image tag
-        run: |
-          repo_lc="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE_REPO=ghcr.io/${repo_lc}" >> "$GITHUB_ENV"
-          echo "IMAGE=ghcr.io/${repo_lc}:${{ github.sha }}" >> "$GITHUB_ENV"
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
-
-      - name: Login to ghcr
-        uses: docker/login-action@650006c6eb7dba73a995cc03b0b2d7f5ca915bee # v4.2.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push image
-        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
-        with:
-          context: .
-          push: true
-          tags: ${{ env.IMAGE }}
-          cache-from: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE_REPO }}:buildcache,mode=max
-
-      - name: Render and apply Secret
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-        run: |
-          if [ -z "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
-            echo "::error::CLAUDE_CODE_OAUTH_TOKEN is empty — set it as an Actions secret"
-            exit 1
-          fi
-          # Namespace is pre-created by the admin-applied deploy/ci-rbac.yaml; the
-          # runner SA can only `get` it (create is intentionally not granted).
-          kubectl get namespace social-update >/dev/null
-          # --from-literal keeps the token verbatim; --dry-run|apply is idempotent.
-          kubectl create secret generic social-update-secrets -n social-update \
-            --from-literal=CLAUDE_CODE_OAUTH_TOKEN="$CLAUDE_CODE_OAUTH_TOKEN" \
-            --dry-run=client -o yaml | kubectl apply -n social-update -f -
-
-      - name: Apply storage, TLS, and Service
-        run: |
-          kubectl apply -n social-update -f deploy/pvc.yaml
-          kubectl apply -n social-update -f deploy/certificate.yaml
-          kubectl apply -n social-update -f deploy/service.yaml
-          kubectl apply -n social-update -f deploy/tls-proxy.yaml
-
-      - name: Apply Deployment
-        run: |
-          export IMAGE
-          envsubst < deploy/deployment.yaml | kubectl apply -n social-update -f -
-          kubectl rollout status deployment/social-update -n social-update --timeout=180s
-
-      - name: Show result
-        run: kubectl get pods,svc,certificate -n social-update
+  deploy:
+    needs: build
+    permissions:
+      contents: read
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v4
+    with:
+      runner: arc-df-social-update
+      namespace: social-update
+      image: ${{ needs.build.outputs.image }}
+      # setup-kubectl deliberately omitted (defaults false): the
+      # arc-df-social-update image already carries kubectl, which is why the
+      # previous inline job called it with no install step. deploy-k8s.yml
+      # verifies kubectl is present and fails loudly if that ever stops holding.
+      #
+      # Namespace is pre-created by the admin-applied deploy/ci-rbac.yaml and the
+      # runner SA can only `get` it, so `get` keeps a missing namespace as a
+      # clear error rather than an RBAC denial. deploy/namespace.yaml and
+      # deploy/ci-rbac.yaml stay admin-owned and are not applied here.
+      ensure-namespace: get
+      # Replaces the inline `kubectl create secret --from-literal | apply`.
+      # Keys come from the SECRET_LITERALS secret as KEY=VALUE lines; the
+      # workflow applies it before any manifest, matching the old step order.
+      secret-name: social-update-secrets
+      manifests: |
+        deploy/pvc.yaml
+        deploy/certificate.yaml
+        deploy/service.yaml
+        deploy/tls-proxy.yaml
+      # envsubst-vars defaults to $IMAGE, the only variable this manifest uses.
+      templated-manifests: deploy/deployment.yaml
+      # deployment.yaml reads the token via secretKeyRef, i.e. as an env var,
+      # and env vars are injected at container start and never refreshed. So
+      # rotating the token and re-deploying the same commit would otherwise
+      # change nothing the pod can see: identical pod template, apply is a
+      # no-op, no rollout, old token still served. Restarting here forces the
+      # new Secret to be read, and runs before the rollout wait so that
+      # `rollout status` below blocks on this restart rather than racing it.
+      post-apply-command: kubectl rollout restart deployment/social-update
+      rollout-targets: deployment/social-update
+      rollout-timeout: 180s
+      show-command: kubectl get pods,svc,certificate
+    # Composed here rather than stored as its own secret: the token already
+    # exists as a repo secret, and secret values are write-only, so a separate
+    # SECRET_LITERALS secret would mean re-sourcing the token by hand and then
+    # having two copies of one credential to rotate. The block scalar matters --
+    # deploy-k8s.yml parses this line-by-line, one KEY=VALUE per line.
+    secrets:
+      SECRET_LITERALS: |
+        CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
