@@ -64,11 +64,23 @@ jobs:
       # Keys come from the SECRET_LITERALS secret as KEY=VALUE lines; the
       # workflow applies it before any manifest, matching the old step order.
       secret-name: social-update-secrets
+      # deploy/tls-proxy.yaml is deliberately NOT applied. The ingress/edge-proxy
+      # absorbed this service's vhost on 2026-08-08 and the per-namespace proxy
+      # Deployment was deleted then. It stayed in this list, and because the repo
+      # had not deployed since 2026-06-21, the first run after that deletion
+      # resurrected it as a pod that can never schedule -- edge-proxy owns
+      # hostPort 443 on acer-laptop, and the only other node carries an
+      # untolerated taint.
+      #
+      # That zombie is not inert: it is a permanently queued claimant on :443.
+      # edge-proxy is strategy: Recreate, so on its next roll the port frees for
+      # a moment and the scheduler can award it to the zombie instead, leaving
+      # edge-proxy Pending and dropping every vhost it fronts. Keeping this file
+      # out of CI is what prevents that.
       manifests: |
         deploy/pvc.yaml
         deploy/certificate.yaml
         deploy/service.yaml
-        deploy/tls-proxy.yaml
       # envsubst-vars defaults to $IMAGE, the only variable this manifest uses.
       templated-manifests: deploy/deployment.yaml
       # deployment.yaml reads the token via secretKeyRef, i.e. as an env var,

@@ -1,9 +1,29 @@
-# TLS terminator for social.itguys.ro. Mirrors the cluster's nginx-tls-proxy
-# convention: an nginx pod pinned to one node binds that node's hostPort 443 and
-# reverse-proxies to the app over HTTP. Pinned to acer-laptop (co-located with the
-# app + PVC); asus-laptop already owns its own :443 proxy, so the two never clash
-# (DNS points each Mesh hostname at its node's IP). nginx runs as root only to bind
-# privileged 443; the app itself stays non-root.
+# RETIRED 2026-08-08 — DO NOT APPLY. Not in deploy.yml's manifests list, and it
+# must not be added back.
+#
+# ingress/edge-proxy absorbed social.itguys.ro on 2026-08-08 (see that repo's
+# edge-proxy configmap) and this Deployment was deleted the same day. The file is
+# kept only as a record of the per-namespace-proxy shape, matching the convention
+# the nextcloud repo uses for its own retired copy.
+#
+# Applying it is actively dangerous rather than merely redundant. edge-proxy owns
+# hostPort 443 on acer-laptop and the only other node carries an untolerated
+# taint, so this pod can never schedule -- it just queues on the port forever.
+# edge-proxy is strategy: Recreate, so when it next rolls the port frees briefly
+# and the scheduler can award it here instead, leaving edge-proxy Pending and
+# taking down every vhost it fronts (nextcloud, headlamp, grafana, vault, apps,
+# pdf, chat, social). That is what happened on 2026-08-25, when the first deploy
+# since 2026-06-21 re-applied this file and created exactly that zombie.
+#
+# The original header below is preserved but its premise is stale: it assumed
+# asus-laptop owned a second :443, and that node was decommissioned 2026-08-08.
+#
+#   TLS terminator for social.itguys.ro. Mirrors the cluster's nginx-tls-proxy
+#   convention: an nginx pod pinned to one node binds that node's hostPort 443
+#   and reverse-proxies to the app over HTTP. Pinned to acer-laptop (co-located
+#   with the app + PVC); asus-laptop already owns its own :443 proxy, so the two
+#   never clash (DNS points each Mesh hostname at its node's IP). nginx runs as
+#   root only to bind privileged 443; the app itself stays non-root.
 apiVersion: v1
 kind: ConfigMap
 metadata:
