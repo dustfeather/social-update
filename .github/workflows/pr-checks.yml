@@ -10,3 +10,11 @@ jobs:
       node-version: "26"
       run-build: true          # `npm run build` (tsc); lint/test/typecheck auto-skip (no such scripts)
       runner: arc-df-social-update
+
+  web:
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v4
+    with:
+      node-version: "26"
+      working-dir: web
+      run-build: true          # `tsc --noEmit && vite build`
+      runner: arc-df-social-update
