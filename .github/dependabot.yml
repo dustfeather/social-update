@@ -33,6 +33,15 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 3
+    # Dependabot tracks the newest tag matching the shape of the current one
+    # and has no idea what LTS means, so it will happily offer node 25 -- an
+    # odd major, which never enters LTS and reaches end of life with no
+    # maintenance window. This Dockerfile is the production runtime, not just a
+    # builder, so only even majors are wanted here. Drop an entry from this list
+    # when its major turns out to be the one to move to.
+    ignore:
+      - dependency-name: "node"
+        versions: ["25.x", "27.x", "29.x"]
 
   # Every `uses:` in this repo now points at dustfeather/shared-workflows, so
   # this block exists to catch that pin going to a new major. The pin is a bare
