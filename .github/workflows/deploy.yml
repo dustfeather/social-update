@@ -8,6 +8,11 @@ on:
       - "deploy/**"
       - "Dockerfile"
       - "prompt.txt"
+      # tsconfig.json is an input to the image build (the Dockerfile copies it
+      # and runs `npm run build`), so a change to it alone must redeploy. Bumps
+      # usually touch package.json too, which hid this: a compiler-options-only
+      # commit would have left the running pod on the previously built dist/.
+      - "tsconfig.json"
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/deploy.yml"
