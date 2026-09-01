@@ -14,7 +14,17 @@ version: 2
 updates:
   # Two npm manifests: the service at the root and the Vite frontend in /web.
   # They have separate lockfiles, so a bump in one never conflicts with the
-  # other -- no consolidation needed when several land at once.
+  # other -- no consolidation needed across the two directories.
+  #
+  # Within /web it is a different story. react/react-dom and their @types are
+  # peer-locked to each other, and an ungrouped major produces one PR per
+  # "multi" update group: @types/react-dom@19 peer-requires @types/react@^19.2,
+  # while @types/react-dom@18 peer-requires @types/react@^18. So each PR fails
+  # `npm ci` with ERESOLVE on its own, and neither merge order leaves main
+  # installable in between. The react group below has no update-types filter on
+  # purpose -- majors are exactly the case that must arrive as one PR. It is
+  # listed first because a dependency joins the FIRST group it matches, which
+  # keeps react minors out of npm-minor-patch and in one place.
   - package-ecosystem: npm
     directories:
       - "/"
@@ -23,6 +33,12 @@ updates:
       interval: weekly
     open-pull-requests-limit: 5
     groups:
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
       npm-minor-patch:
         update-types:
           - minor
