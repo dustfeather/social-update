@@ -1,5 +1,7 @@
 # Social Journal
 
+[![Deploy](https://github.com/dustfeather/social-update/actions/workflows/deploy.yml/badge.svg)](https://github.com/dustfeather/social-update/actions/workflows/deploy.yml)
+
 Turn sporadic posting into a weekly habit. Daily collectors log your activity into a
 SQLite DB; a web UI generates copy-ready LinkedIn drafts on demand.
 
