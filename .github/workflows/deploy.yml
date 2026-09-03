@@ -18,10 +18,11 @@ on:
       - ".github/workflows/deploy.yml"
   workflow_dispatch: {}
 
-# One deploy at a time — the RWO PVC and host :443 have single owners.
+# One deploy at a time — the RWO PVC and host :443 have single owners. Newest
+# wins: a superseded run is cancelled rather than queued behind it.
 concurrency:
   group: deploy-social-update
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   tests:
