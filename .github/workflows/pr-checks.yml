@@ -27,6 +27,8 @@ jobs:
       node-version: "26"
       run-build: true          # `npm run build` (tsc); lint/test/typecheck auto-skip (no such scripts)
       runner: arc-df-social-update
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   web:
     # Skipped on `closed` — see the `types:` note above.
@@ -37,6 +39,8 @@ jobs:
       working-dir: web
       run-build: true          # `tsc --noEmit && vite build`
       runner: arc-df-social-update
+    secrets:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   review:
     if: github.event.action != 'closed'
