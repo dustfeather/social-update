@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isoWeekRange } from "./iso-week";
 import { htmlToText, textToHtml, firstUrl, sanitizeHtml, sanitizeElement, safeHref } from "./draft-text";
 import {
   fetchWeeks,
@@ -113,6 +114,7 @@ export default function App() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const weekRange = isoWeekRange(week);
 
   return (
     <div className="app">
@@ -136,6 +138,7 @@ export default function App() {
       <section className="items">
         <h2>
           Activity — {total} item{total === 1 ? "" : "s"}
+          {weekRange && <span className="h2-range"> ({weekRange})</span>}
         </h2>
         <ul>
           {items.map((it) => (

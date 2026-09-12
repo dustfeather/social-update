@@ -404,3 +404,11 @@ textarea {
   padding: 0 6px;
   line-height: 1;
 }
+
+/* The week's calendar dates, sitting next to the item count in the section
+   heading — same size, dimmer, so it reads as a caption not a second heading. */
+.h2-range {
+  text-transform: none;
+  letter-spacing: normal;
+  opacity: 0.75;
+}
