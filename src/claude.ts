@@ -42,13 +42,41 @@ function runAgent(prompt: string): Promise<void> {
       "claude",
       [
         "-p",
-        // Edits land in a cache directory and every command is a `node dist/...`
-        // from this repo, so the run is auto-approved rather than prompting into
-        // a void — a permission prompt in print mode is an instant denial.
+        // A permission prompt in print mode is an instant denial, so the run has
+        // to be pre-authorized. What it is authorized for is deliberately narrow.
+        //
+        // The sub-agents read session transcripts, and a transcript contains
+        // whatever text ever passed through a session — pasted pages, repo files,
+        // error output. That is untrusted input, so this allowlist is the boundary
+        // that keeps a prompt injection inside it from becoming code execution:
+        //
+        //   - `node` is pinned to the three scripts of this pipeline by full path.
+        //     A bare `Bash(node:*)` would permit `node -e "..."`, which is simply
+        //     "run anything" spelled differently.
+        //   - the reading tools (wc/grep/head/tail) cannot execute, and the agents
+        //     already have Read.
+        //   - no WebFetch/WebSearch: without an outbound channel, anything that did
+        //     get through has nowhere to send what it found.
         "--permission-mode",
         "acceptEdits",
         "--allowedTools",
-        "Task,Agent,Read,Write,Glob,Grep,Bash(node:*),Bash(wc:*),Bash(grep:*),Bash(head:*),Bash(tail:*)",
+        [
+          "Task",
+          "Agent",
+          "Read",
+          "Write",
+          "Glob",
+          "Grep",
+          `Bash(node ${REPO}/dist/summary-validate.js:*)`,
+          `Bash(node ${REPO}/dist/claude-import.js:*)`,
+          `Bash(node ${REPO}/dist/claude-tag.js:*)`,
+          "Bash(wc:*)",
+          "Bash(grep:*)",
+          "Bash(head:*)",
+          "Bash(tail:*)",
+        ].join(","),
+        "--disallowedTools",
+        "WebFetch,WebSearch",
       ],
       { cwd: REPO, stdio: ["pipe", "pipe", "pipe"] }
     );
