@@ -4,7 +4,6 @@ import path from "path";
 import { config } from "dotenv";
 import { buildManifest, WORK_DIR } from "./claude-sessions";
 import { importSummaries } from "./claude-import";
-import { SCHEMA_DOC } from "./summary";
 
 config({ quiet: true });
 
@@ -22,7 +21,7 @@ const PROMPT_PATH = path.join(REPO, "prompts", "collect-agent.md");
 // run would hold the collector's slot until the next timer fires.
 const TIMEOUT_MS = Number(process.env.CLAUDE_AGENT_TIMEOUT_MIN ?? 45) * 60_000;
 
-// Indent a block so it sits inside the prompt's sub-agent instructions.
+// Indent a block so the agent's own output is visibly quoted in the collector log.
 const indent = (s: string, by = "    ") => s.split("\n").map((l) => by + l).join("\n");
 
 export function buildPrompt(count: number): string {
@@ -32,8 +31,7 @@ export function buildPrompt(count: number): string {
     .replaceAll("{{MANIFEST}}", path.join(WORK_DIR, "manifest.json"))
     .replaceAll("{{SUMMARY_DIR}}", path.join(WORK_DIR, "summaries"))
     .replaceAll("{{WORK_DIR}}", WORK_DIR)
-    .replaceAll("{{COUNT}}", String(count))
-    .replaceAll("{{SCHEMA}}", indent(SCHEMA_DOC));
+    .replaceAll("{{COUNT}}", String(count));
 }
 
 function runAgent(prompt: string): Promise<void> {

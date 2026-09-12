@@ -10,17 +10,24 @@ transcript), `mtime` and `size`.
 
 ## Step 1 — fan out, one sub-agent per session
 
-Dispatch **one `session-summarizer` sub-agent per manifest entry**, and send them
-**concurrently — as many Agent calls in a single message as you can**. Do not
+Dispatch **one `session-summarizer` sub-agent per manifest entry**. Do not
 summarize any session yourself: your context is the scarce resource here, and a
 transcript read into it is one that crowds out the tagging pass.
 
-Every session in the manifest gets a sub-agent; there is no cap on the total. If
-the manifest is long, send them in waves of roughly 25 per message and start the
-next wave as soon as the previous one is dispatched — the waves are a limit on
-what fits in one message, not a limit on how many sessions you process.
+**Put 25 Agent calls in ONE message.** Not one call, then its result, then the
+next. Twenty-five separate tool-use blocks in the same assistant turn, then the
+next twenty-five in the turn after that, until the manifest is exhausted. There
+is no cap on the total.
 
-Give each sub-agent exactly this, filled in from its manifest entry:
+This is the single thing that decides whether the run takes ten minutes or two
+hours, and it is easy to get wrong without noticing: a previous run dispatched
+25 sub-agents one per message and produced one summary every 26 seconds, turning
+a 152-session backfill into a 67-minute serial crawl. Each sub-agent takes about
+the same time whether it runs alone or alongside two dozen others, so the whole
+cost of the step is (sessions ÷ per-message width) × one sub-agent.
+
+Each dispatch is six lines — deliberately small, so that twenty-five of them in
+one message stay cheap to emit:
 
     Summarize one Claude Code session.
 
@@ -29,17 +36,16 @@ Give each sub-agent exactly this, filled in from its manifest entry:
     transcript:  <path>
     occurred_at: <mtime>
     write to:    {{SUMMARY_DIR}}/<session_id>.json
+    repo:        {{REPO}}
 
-    The file must contain this JSON object and nothing else:
+The sub-agent knows the schema and the validation loop from its own definition;
+it prints the contract with `summary-validate.js --schema`. Do not paste the
+schema into the dispatch — that is what made an earlier version fall back to one
+sub-agent per message.
 
-{{SCHEMA}}
-
-    Then validate it:
-        node {{REPO}}/dist/summary-validate.js {{SUMMARY_DIR}}/<session_id>.json
-    It exits nonzero and names the offending field. Fix and re-run until it prints
-    OK. Do not stop while it fails.
-
-Wait for every sub-agent to finish before going on.
+Wait for every sub-agent in a wave to finish before going on to Step 2, but do
+not wait between waves: dispatch the next wave as soon as the previous message
+is sent.
 
 ## Step 2 — import
 
