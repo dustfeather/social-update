@@ -13,6 +13,7 @@
     "build:all": "npm run build && npm run build:web",
     "test": "node --test web/src/*.test.mjs",
     "collect": "node dist/collect.js",
+    "claude-web:script": "node dist/claude-web-script.js",
     "start": "node dist/server.js",
     "dev": "tsc --watch",
     "typecheck": "tsc --noEmit",
@@ -20,8 +21,7 @@
   },
   "dependencies": {
     "dotenv": "^17.4.2",
-    "express": "^5.2.1",
-    "playwright": "^1.62.1"
+    "express": "^5.2.1"
   },
   "devDependencies": {
     "@types/express": "^5.0.0",

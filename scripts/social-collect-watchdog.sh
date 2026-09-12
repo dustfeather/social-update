@@ -17,68 +17,11 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
-# The claude-web collector attaches to a real Chrome over CDP (claude.ai's
-# Cloudflare Turnstile blocks launched/automated browsers — see README). Under
-# WSLg the browser needs a display; systemd --user doesn't inherit one.
-export DISPLAY="${DISPLAY:-:0}"
-
-# Helper: read a single key from .env (don't `source` it — quoted paths w/ spaces).
-envval() { grep -E "^$1=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'"; }
-
-# If CLAUDE_CDP_URL is set, make sure a logged-in Chrome is listening on that
-# port before collecting. If WE have to launch it, we also close the whole
-# browser when the run ends (see the EXIT trap below) instead of leaving a window
-# open. Trade-off: each run that launches Chrome re-hits Cloudflare Turnstile, so
-# the profile must already hold a valid login/clearance for it to pass unattended.
-CDP="$(envval CLAUDE_CDP_URL)"
-if [ -n "$CDP" ]; then
-  PORT="${CDP##*:}"
-  PROFILE="$(envval CLAUDE_CHROME_PROFILE)"; PROFILE="${PROFILE:-$HOME/.cache/social-update/chrome-profile}"
-  PROFILE="$(eval echo "$PROFILE")" # expand $HOME/~ (envval greps, doesn't source)
-  if ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
-    # Nothing on the port, so we would have to launch a browser ourselves. A
-    # headful Chrome BLOCKS FOREVER on an unreachable X display: WSLg's
-    # compositor dies with the Windows session but leaves DISPLAY set and
-    # /tmp/.X11-unix/X0 present, so nothing looks wrong — the zygote just waits,
-    # the debug port is never bound, and every probe below times out (curl 28)
-    # instead of being refused (curl 7). Headless is NOT a fallback here:
-    # claude.ai's Turnstile loops forever on any launched browser, which is the
-    # whole reason this collector attaches to a real one (see src/claude-web.ts).
-    # So when the display is dead, skip the source honestly instead of hanging
-    # ~50s and failing the whole run. Test whether the display OPENS — the
-    # socket file existing proves nothing.
-    if command -v xdpyinfo >/dev/null 2>&1 && ! xdpyinfo -display "${DISPLAY:-:0}" >/dev/null 2>&1; then
-      echo "claude-web: SKIP — X display ${DISPLAY:-:0} is set but unreachable; not launching a browser that would hang"
-      export CLAUDE_WEB_SKIP=1
-    else
-      CHROME="$(command -v chromium || command -v chromium-browser || command -v google-chrome || echo /snap/bin/chromium)"
-      echo "claude-web: starting $CHROME on :$PORT (profile $PROFILE)"
-      # Park the window off-screen so it doesn't pop up on the Windows desktop.
-      # WSLg has no usable WM (no wmctrl/xdotool, Weston ignores X11 iconify), and
-      # Xvfb/cage are dead ends here (claude.ai Turnstile blocks headless), so an
-      # off-screen geometry is the only no-deps "minimize". Stays parked until the
-      # EXIT trap below closes the whole browser.
-      setsid "$CHROME" --remote-debugging-port="$PORT" --user-data-dir="$PROFILE" \
-        --no-first-run --no-default-browser-check \
-        --window-position=-32000,-32000 --window-size=1,1 >/tmp/social-collect-chrome.log 2>&1 &
-      CHROME_LEADER=$!   # setsid makes this the session/process-group leader
-      disown 2>/dev/null || true
-      # Close the entire browser (not just the claude-web tab) when this run ends,
-      # on ANY exit path. Negative PID targets the whole process group. Guarded so
-      # we only ever kill a Chrome WE launched, never one the user already had open.
-      trap 'if [ -n "${CHROME_LEADER:-}" ]; then echo "claude-web: closing collector Chrome"; kill -- -"$CHROME_LEADER" 2>/dev/null || kill "$CHROME_LEADER" 2>/dev/null; fi' EXIT
-      for _ in $(seq 1 20); do
-        curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/json/version" && break
-        sleep 1
-      done
-    fi
-  fi
-  if [ -z "${CLAUDE_WEB_SKIP:-}" ] && ! curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$PORT/json/version"; then
-    # Not fatal: collect.ts catches per-source, so other sources still run; the
-    # FAILED grep below will flag claude-web so it surfaces in journald.
-    echo "WARN: claude-web CDP Chrome unreachable on :$PORT (may need a manual re-login)"
-  fi
-fi
+# claude.ai collection is payload-driven and needs nothing from this box: the
+# browser step runs in an attended Claude Code session through the Chrome
+# extension (an unattended one is refused by an auto-mode classifier), and drops
+# a payload the next run ingests. No display, no debug port, no second profile.
+# A missing payload just means claude-web collects nothing this run.
 
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"

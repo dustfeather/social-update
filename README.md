@@ -53,12 +53,12 @@ flowchart TB
     subgraph collect["1 · Collection (local → cluster)"]
         SVC["social-collect.service<br/>enqueue 'daily'"]
         POLL["social-collect-poll.sh<br/>(poller: timer + UI runs)"]
-        WD["social-collect-watchdog.sh<br/>probe ingest canary · launch CDP Chrome"]
+        WD["social-collect-watchdog.sh<br/>probe ingest canary · run collectors"]
         COL["collect.ts (per-source, fault-isolated)"]
         SRC_GH["github — authed gh events"]
         SRC_OB["obsidian — vault (read-only)"]
         SRC_CC["claude-code — ~/.claude/projects transcripts"]
-        SRC_CW["claude-web — CDP → your logged-in Chrome → claude.ai"]
+        SRC_CW["claude-web — payload dropped by an attended browser session"]
     end
 
     subgraph cluster["k3s · social.itguys.ro (acer-laptop, WARP-only)"]
@@ -113,8 +113,8 @@ flowchart TB
 > Highlighted = a `claude` process runs. Note graphify: the **post-commit hook is AST-only, no
 > LLM** (`graphify update` + `global add`) — Claude is *not* called on commit. The LLM backend
 > (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
-> (claude-web) is also the odd one out: it does **not** run inference — it drives *your*
-> logged-in claude.ai session over CDP to scrape chat history (Cloudflare Turnstile blocks
+> (claude-web) is also the odd one out: it does **not** run inference — it reads chat
+> history out of *your* logged-in claude.ai session in a real browser (Cloudflare Turnstile blocks
 > automated browsers). The genuine model calls are the in-pod Opus drafter (`/api/generate`)
 > and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox = Haiku).
 >
@@ -148,7 +148,9 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 |-----|---------|
 | `VAULT_PATH` | Obsidian vault root (read-only). `~` and `$HOME` are expanded; quote paths with spaces. |
 | `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). |
-| `CLAUDE_CDP_URL` | CDP endpoint of a real Chrome you run (e.g. `http://localhost:9222`), used to collect claude.ai web conversations. Cloudflare Turnstile blocks automated browsers, so the collector attaches to your genuine, logged-in session instead. Unset = web collection skipped. See below. |
+| `CLAUDE_WEB_PAYLOAD` | Where the claude.ai browser step drops its JSON (default `~/.cache/social-update/claude-web.json`). The collector ingests it, then deletes it. See below. |
+| `CLAUDE_WEB_PAYLOAD_MAX_AGE_HOURS` | Ignore a payload older than this (default 36) so a forgotten file stops re-collecting the same week. |
+| `CLAUDE_WEB_LOOKBACK_DAYS` | How far back the browser script looks for touched conversations (default 7). |
 | `CLAUDE_WEB_BASE` | claude.ai API base (default `https://claude.ai`). Rarely changed. |
 | `GITHUB_USER` | GitHub username whose events the collector reads (via authed `gh`). |
 | `GITHUB_EXCLUDE_REPOS` | Comma-separated `owner/repo` to drop from collection; trailing `/*` excludes a whole owner. Empty = none. Editable from the UI ("GitHub repo filter" panel) — saved here, applied on the next collection run. |
@@ -198,40 +200,40 @@ journalctl --user -t social-collect -n 30            # run logs
 > linger). The unit files live under `scripts/systemd/` so they're version-controlled and can't
 > silently disappear the way the old Windows Scheduled Task did.
 
-### claude.ai web conversations (CDP browser)
+### claude.ai web conversations (attended browser step)
 
 The `claude-web` collector pulls your claude.ai chat history. There is no public
 API for it (the Anthropic API is stateless), and claude.ai's Cloudflare Turnstile
-blocks every automated browser — headless, headful, and stealth-patched all loop
-on the "verify you are human" challenge. So the collector **attaches over CDP to a
-real Chrome you keep running and have logged into** (Cloudflare clears normally for
-a genuine human-driven browser).
+blocks any freshly-launched automated browser — headless or headful — so the data
+can only be read from a browser you already cleared during normal use.
 
-One-time setup — start a dedicated Chrome with a debug port and log in:
+That browser is reached through the **Claude-in-Chrome extension**, from an
+interactive Claude Code session. This step cannot be automated: an unattended
+`claude -p --chrome` run is refused by an auto-mode safety classifier
+(`[Browser JS Exfil]`) that sits outside the permission system, so
+`--permission-mode bypassPermissions` does not clear it. Rather than make the
+daily timer depend on a human being present, the browser step is decoupled from
+it — you drop a payload whenever convenient, and the next collector run ingests
+it.
+
+In a Claude Code session with the Chrome extension paired, ask for the claude.ai
+payload. The three steps are:
 
 ```bash
-chromium --remote-debugging-port=9222 \
-  --user-data-dir="$HOME/.cache/social-update/chrome-profile" &
-# in that window: go to https://claude.ai, solve Turnstile once, log in
+npm run claude-web:script          # prints the in-page script
 ```
 
-Then set `CLAUDE_CDP_URL="http://localhost:9222"` in `.env`. Leave that Chrome
-running; the collector connects to it each run, executes the internal API calls as
-same-origin `fetch()` in your genuine session, and never closes your browser. Unset
-`CLAUDE_CDP_URL` to skip web collection entirely. The login session lasts weeks;
-re-log when the collector starts reporting auth failures.
+1. Open `https://claude.ai/recents` in the paired browser.
+2. Run that script there with the extension's `javascript_tool`.
+3. Save the result verbatim to `~/.cache/social-update/claude-web.json`.
 
-For the unattended daily timer, `social-collect-watchdog.sh` handles this: it
-exports `DISPLAY=:0` (WSLg), and if `CLAUDE_CDP_URL` is set it launches a Chrome
-on that port from `CLAUDE_CHROME_PROFILE` (default
-`$HOME/.cache/social-update/chrome-profile`) when one isn't already up. The
-service runs with `KillMode=process` so that Chrome survives between runs and
-keeps its Cloudflare clearance + login — only the first run (or a re-login after
-the session lapses) needs a human to pass Turnstile once. After changing these
-files, redeploy with `scripts/install-collector-systemd.sh`.
+The next `npm run collect` (or the daily timer) picks it up, inserts what is new,
+and deletes the file. Nothing else on the box is involved — no display, no debug
+port, no second Chrome profile.
 
-> If the debug browser is unreachable at collect time, `claude-web` reports
-> FAILED in journald and the other sources still run.
+> A missing or stale payload is a normal outcome, not an error: `claude-web`
+> logs that it collected nothing and every other source still runs. It never
+> fails the run.
 
 ### Legacy: Windows Task Scheduler (deprecated)
 
