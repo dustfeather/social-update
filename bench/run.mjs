@@ -5,7 +5,7 @@
 // nothing else. Swapping engines is a base-URL change, which is the property that
 // lets this benchmark be re-run later against a different backend without edits.
 //
-//   node bench/run.mjs --model qwen3:8b --base http://127.0.0.1:11434/v1 --n 12
+//   node bench/run.mjs --model qwen3:8b --n 12
 //
 // Results land in bench/results/<tag>.json — one file per model, so a run can be
 // interrupted and resumed a model at a time.
@@ -24,7 +24,7 @@ const arg = (name, def) => {
 };
 
 const MODEL = arg("model");
-const BASE = arg("base", "http://127.0.0.1:8080/v1");
+const BASE = arg("base", "http://127.0.0.1:11434/v1");
 const N = Number(arg("n", 12));
 const MAX_ATTEMPTS = Number(arg("attempts", 3));
 const TAG = arg("tag", MODEL?.replace(/[^\w.-]/g, "_"));
@@ -131,6 +131,21 @@ async function runOne(session) {
 const sample = pickSample(N);
 fs.mkdirSync(RESULTS, { recursive: true });
 console.log(`${MODEL} @ ${BASE} — ${sample.length} sessions, max ${MAX_ATTEMPTS} attempts each\n`);
+
+// Ollama holds one model at a time (OLLAMA_MAX_LOADED_MODELS=1), so the first
+// request after a model switch pays the whole cold load — tens of seconds for a
+// large MoE read off disk. Charging that to session 1 would make whichever model
+// ran first look slow, and it would scale straight into the "150 sessions would
+// take" estimate at the end.
+process.stdout.write("warming up (cold load is not counted) ... ");
+const warmStart = Date.now();
+try {
+  await chat([{ role: "user", content: "Reply with the single word: ready" }]);
+  console.log(`${((Date.now() - warmStart) / 1000).toFixed(1)}s\n`);
+} catch (e) {
+  console.log(`FAILED\n\n${e}\n`);
+  process.exit(1);
+}
 
 const rows = [];
 for (const [i, s] of sample.entries()) {
