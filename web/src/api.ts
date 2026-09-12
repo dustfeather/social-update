@@ -14,6 +14,8 @@ export interface Item {
   occurred_at: string | null;
   iso_week: string | null;
   ignored: number;
+  /** JSON array of strings, assigned by the collection run's tagging pass. NULL until tagged. */
+  tags: string | null;
 }
 
 export interface ItemsPage {
@@ -42,20 +44,6 @@ export const fetchWeeks = () => getJson<WeekRow[]>("/api/weeks");
 
 export const fetchItems = (week: string, page: number, limit: number) =>
   getJson<ItemsPage>(`/api/items?week=${encodeURIComponent(week)}&page=${page}&limit=${limit}`);
-
-export const fetchGithubRepos = () => getJson<string[]>("/api/github-repos");
-
-export const fetchSettings = () => getJson<{ excludeRepos: string[] }>("/api/settings");
-
-export async function saveSettings(excludeRepos: string[]): Promise<{ excludeRepos: string[] }> {
-  const res = await fetch("/api/settings", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ excludeRepos }),
-  });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `save failed (${res.status})`);
-  return res.json();
-}
 
 export interface CollectRun {
   id: number;

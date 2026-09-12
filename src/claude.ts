@@ -1,116 +1,116 @@
-import fs from "fs/promises";
+import { spawn } from "child_process";
+import fs from "fs";
 import path from "path";
 import { config } from "dotenv";
-import { insertItems } from "./sink";
-import { expandHome } from "./paths";
-import type { ItemInput } from "./db";
+import { buildManifest, WORK_DIR } from "./claude-sessions";
+import { importSummaries } from "./claude-import";
+import { SCHEMA_DOC } from "./summary";
 
-config();
+config({ quiet: true });
 
-const CLAUDE_PROJECTS = expandHome(process.env.CLAUDE_PROJECTS ?? "~/.claude/projects");
+// Collection is an agent run, not a parser. The old collector took each session's
+// first prompt as the item — the question, never the answer. Here one orchestrating
+// agent fans out a sub-agent per session, each reads the whole transcript and
+// writes a validated summary, and the orchestrator imports them and assigns tags
+// across the batch. See prompts/collect-agent.md for what it is told to do.
 
-const MAX_BODY = 4000;
-const MAX_TITLE = 120;
+const REPO = path.join(__dirname, "..");
+const PROMPT_PATH = path.join(REPO, "prompts", "collect-agent.md");
 
-// Extract plain text from a message.content that may be a string or a block array.
-// Shared with the claude.ai web collector (./claude-web).
-export function firstText(content: unknown): string {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    const block = content.find(
-      (b) => b && typeof b === "object" && (b as any).type === "text" && typeof (b as any).text === "string"
+// The agent may legitimately run for a long time — a wide fan-out over big
+// transcripts is minutes, not seconds. It must not run forever, though: a wedged
+// run would hold the collector's slot until the next timer fires.
+const TIMEOUT_MS = Number(process.env.CLAUDE_AGENT_TIMEOUT_MIN ?? 45) * 60_000;
+
+// Indent a block so it sits inside the prompt's sub-agent instructions.
+const indent = (s: string, by = "    ") => s.split("\n").map((l) => by + l).join("\n");
+
+export function buildPrompt(count: number): string {
+  return fs
+    .readFileSync(PROMPT_PATH, "utf8")
+    .replaceAll("{{REPO}}", REPO)
+    .replaceAll("{{MANIFEST}}", path.join(WORK_DIR, "manifest.json"))
+    .replaceAll("{{SUMMARY_DIR}}", path.join(WORK_DIR, "summaries"))
+    .replaceAll("{{WORK_DIR}}", WORK_DIR)
+    .replaceAll("{{COUNT}}", String(count))
+    .replaceAll("{{SCHEMA}}", indent(SCHEMA_DOC));
+}
+
+function runAgent(prompt: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "claude",
+      [
+        "-p",
+        // Edits land in a cache directory and every command is a `node dist/...`
+        // from this repo, so the run is auto-approved rather than prompting into
+        // a void — a permission prompt in print mode is an instant denial.
+        "--permission-mode",
+        "acceptEdits",
+        "--allowedTools",
+        "Task,Agent,Read,Write,Glob,Grep,Bash(node:*),Bash(wc:*),Bash(grep:*),Bash(head:*),Bash(tail:*)",
+      ],
+      { cwd: REPO, stdio: ["pipe", "pipe", "pipe"] }
     );
-    return block ? (block as any).text : "";
-  }
-  return "";
-}
 
-// A genuine typed prompt — not a slash-command wrapper, caveat block, or tool result.
-export function isRealPrompt(text: string): boolean {
-  const t = text.trim();
-  if (!t) return false;
-  // Command/caveat/system wrappers are XML-ish and start with "<".
-  if (t.startsWith("<")) return false;
-  return true;
-}
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (d) => (out += d));
+    child.stderr.on("data", (d) => (err += d));
 
-// First human-typed prompt in a session, or null if none found.
-function findFirstPrompt(lines: string[]): string | null {
-  for (const line of lines) {
-    let o: any;
-    try {
-      o = JSON.parse(line);
-    } catch {
-      continue; // schema drift / partial line — skip defensively
-    }
-    if (o?.type !== "user" || o?.message?.role !== "user") continue;
-    if (o.isSidechain === true || o.isMeta === true) continue; // subagent / meta turns
-    const text = firstText(o.message.content);
-    if (isRealPrompt(text)) return text.trim();
-  }
-  return null;
-}
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error(`agent exceeded ${TIMEOUT_MS / 60_000} min — killed`));
+    }, TIMEOUT_MS);
 
-// cwd recorded on session entries; falls back to decoding the project dir name.
-function findCwd(lines: string[], projectDir: string): string {
-  for (const line of lines) {
-    try {
-      const o = JSON.parse(line);
-      if (typeof o?.cwd === "string" && o.cwd) return o.cwd;
-    } catch {
-      /* skip */
-    }
-  }
-  return projectDir.replace(/^-/, "/").replace(/-/g, "/");
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      // The agent's own words go to the collector log: this is the only place the
+      // run explains itself, and a silent success is indistinguishable from a
+      // silent no-op when something later looks wrong.
+      if (out.trim()) console.log(indent(out.trim(), "  | "));
+      if (code !== 0) return reject(new Error(`claude exited ${code}: ${err.trim().slice(0, 500)}`));
+      resolve();
+    });
+
+    child.stdin.write(prompt);
+    child.stdin.end();
+  });
 }
 
 export async function collectClaude(): Promise<number> {
-  let projectDirs: string[];
+  const manifest = buildManifest();
+  const count = manifest.sessions.length;
+  if (count === 0) {
+    console.log("[collect] claude: no new or changed sessions since the last run");
+    return 0;
+  }
+  console.log(`[collect] claude: ${count} session(s) to summarize`);
+
   try {
-    projectDirs = (await fs.readdir(CLAUDE_PROJECTS, { withFileTypes: true }))
-      .filter((d) => d.isDirectory())
-      .map((d) => d.name);
+    await runAgent(buildPrompt(count));
+  } catch (err) {
+    // A killed or crashed agent may still have left good summaries behind.
+    // Salvage them rather than throwing the whole run away — the sessions it
+    // never reached keep their state entry and come back next time.
+    console.error(`[collect] claude: ${err instanceof Error ? err.message : err}`);
+    console.error("[collect] claude: importing whatever summaries landed");
+    const salvaged = await importSummaries();
+    console.log(`[collect] claude: salvaged ${salvaged.written} item(s)`);
+    return salvaged.written;
+  }
+
+  // The agent runs the import itself; read its report rather than trusting the
+  // final message, which is prose.
+  const reportPath = path.join(WORK_DIR, "import-report.json");
+  try {
+    const report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as { written?: number };
+    return Number(report.written ?? 0);
   } catch {
-    return 0; // no projects dir — nothing to collect
+    throw new Error(`agent finished but wrote no import report at ${reportPath}`);
   }
-
-  const rows: ItemInput[] = [];
-  for (const dir of projectDirs) {
-    const dirPath = path.join(CLAUDE_PROJECTS, dir);
-    let sessionFiles: string[];
-    try {
-      sessionFiles = (await fs.readdir(dirPath)).filter((f) => f.endsWith(".jsonl"));
-    } catch {
-      continue;
-    }
-
-    for (const file of sessionFiles) {
-      const full = path.join(dirPath, file);
-      let content: string;
-      let mtimeMs: number;
-      try {
-        const stat = await fs.stat(full);
-        mtimeMs = stat.mtimeMs;
-        content = await fs.readFile(full, "utf8");
-      } catch {
-        continue;
-      }
-      const lines = content.split("\n").filter(Boolean);
-      const prompt = findFirstPrompt(lines);
-      if (!prompt) continue; // no human prompt → not worth surfacing
-
-      const sessionId = path.basename(file, ".jsonl");
-      const project = path.basename(findCwd(lines, dir));
-      rows.push({
-        source: "claude",
-        external_id: sessionId,
-        title: `${project}: ${prompt.split("\n")[0]}`.slice(0, MAX_TITLE),
-        body: prompt.slice(0, MAX_BODY),
-        url: null,
-        occurred_at: new Date(mtimeMs).toISOString(),
-        raw_json: JSON.stringify({ sessionId, project }),
-      });
-    }
-  }
-  return insertItems(rows);
 }

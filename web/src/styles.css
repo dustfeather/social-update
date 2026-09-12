@@ -98,7 +98,19 @@ button:disabled {
 
 /* Ignored items stay visible but dimmed + struck, signalling they won't reach drafts. */
 .item-ignored .item-title,
-.item-ignored .item-date {
+.item-ignored /* Run-assigned tags, inline after the title. Quieter than the source badge —
+   there can be six of them and they must not out-shout the title itself. */
+.item-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #232833;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.item-date {
   opacity: 0.45;
   text-decoration: line-through;
 }
@@ -118,6 +130,7 @@ button:disabled {
   color: var(--muted);
 }
 
+/* Legacy sources: no longer collected, but their rows stay in the history. */
 .tag-github {
   background: #1f3a2a;
   color: #7ee2a8;
@@ -137,6 +150,18 @@ button:disabled {
 }
 .item-title a:hover {
   text-decoration: underline;
+}
+
+/* Run-assigned tags, inline after the title. Quieter than the source badge —
+   there can be six of them and they must not out-shout the title itself. */
+.item-tag {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #232833;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .item-date {
@@ -310,71 +335,6 @@ textarea {
 
 .save-error {
   color: #ff6b6b;
-}
-
-.settings {
-  margin-top: 32px;
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
-
-.settings summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 13px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.repo-list {
-  list-style: none;
-  margin: 8px 0;
-  padding: 0;
-  max-height: 220px;
-  overflow-y: auto;
-  columns: 2;
-}
-
-.repo-list li {
-  padding: 2px 0;
-  break-inside: avoid;
-}
-
-.repo-list label {
-  font-size: 13px;
-  cursor: pointer;
-}
-
-.patterns {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 8px 0;
-}
-
-.chip {
-  background: #2a2f3a;
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 13px;
-}
-
-.chip button {
-  background: none;
-  border: none;
-  color: var(--muted);
-  padding: 0 0 0 4px;
-  font-size: 14px;
-}
-
-.pattern-add {
-  display: flex;
-  gap: 8px;
-  margin: 8px 0;
-}
-
-.pattern-add input {
-  flex: 1;
 }
 
 .collect {

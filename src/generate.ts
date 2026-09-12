@@ -50,10 +50,25 @@ function parseDrafts(result: string): Draft[] {
     .map((d) => ({ angle: String(d.angle ?? ""), text: String(d.text) }));
 }
 
+// tags is a JSON array written by the tagging pass; NULL until a run tags it.
+function parseTags(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const v = JSON.parse(raw);
+    return Array.isArray(v) ? v.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
 function buildInput(promptText: string, items: ReturnType<typeof getWeekItems>, manualText: string): string {
   const lines: string[] = [promptText.trim(), "", "=== ACTIVITY ITEMS ==="];
   for (const it of items) {
-    lines.push(`- [${it.source}] ${it.title ?? ""}`.trimEnd());
+    // Tags are the run's own cross-session vocabulary — they say what a week was
+    // ABOUT in a way the individual titles do not, so the model sees them too.
+    const tags = parseTags(it.tags);
+    const suffix = tags.length ? `  {${tags.join(", ")}}` : "";
+    lines.push(`- [${it.source}] ${it.title ?? ""}${suffix}`.trimEnd());
     if (it.body) lines.push(`    ${it.body.slice(0, ITEM_BODY_CAP).replace(/\n+/g, " ").trim()}`);
   }
   const manual = manualText.trim();

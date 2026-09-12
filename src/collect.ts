@@ -1,18 +1,12 @@
-import { collectGithub } from "./github";
-import { collectObsidian } from "./obsidian";
 import { collectClaude } from "./claude";
-import { collectClaudeWeb } from "./claude-web";
 
-// Single entry point for all collectors. Each is added as its slice lands.
-// Runs every collector independently so one failing source never blocks the rest.
+// Single entry point for collection. Claude Code sessions are the only source:
+// GitHub events duplicated what the sessions already say (and said it in commit
+// subjects), Obsidian notes and claude.ai conversations were mostly not about the
+// work being journalled. Removed 2026-09-12 — see git history for the collectors.
 type Collector = { name: string; run: () => Promise<number> };
 
-const collectors: Collector[] = [
-  { name: "github", run: collectGithub },
-  { name: "obsidian", run: collectObsidian },
-  { name: "claude", run: collectClaude },
-  { name: "claude-web", run: collectClaudeWeb },
-];
+const collectors: Collector[] = [{ name: "claude", run: collectClaude }];
 
 async function main() {
   let total = 0;
@@ -20,12 +14,12 @@ async function main() {
     try {
       const n = await c.run();
       total += n;
-      console.log(`[collect] ${c.name}: ${n} new item${n === 1 ? "" : "s"}`);
+      console.log(`[collect] ${c.name}: ${n} item${n === 1 ? "" : "s"} written`);
     } catch (err) {
       console.error(`[collect] ${c.name}: FAILED —`, err instanceof Error ? err.message : err);
     }
   }
-  console.log(`[collect] done — ${total} new item${total === 1 ? "" : "s"} total`);
+  console.log(`[collect] done — ${total} item${total === 1 ? "" : "s"} written`);
 }
 
 main().then(

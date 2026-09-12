@@ -2,31 +2,32 @@
 
 [![Deploy](https://github.com/dustfeather/social-update/actions/workflows/deploy.yml/badge.svg)](https://github.com/dustfeather/social-update/actions/workflows/deploy.yml)
 
-Turn sporadic posting into a weekly habit. Daily collectors log your activity into a
-SQLite DB; a web UI generates copy-ready LinkedIn drafts on demand.
+Turn sporadic posting into a weekly habit. A daily agent run summarizes your Claude Code
+sessions into a SQLite DB; a web UI generates copy-ready LinkedIn drafts on demand.
 
-**Nothing is auto-published.** No posting APIs — you copy/paste the drafts yourself. The
-Obsidian vault is read-only input; no journal note is ever written.
+**Nothing is auto-published.** No posting APIs — you copy/paste the drafts yourself.
 
 ## How it works
 
 The DB + web UI + generation run on the k3s cluster (`https://social.itguys.ro`, WARP-only).
-The collectors stay on your machine (they need local `gh`, the Obsidian vault, and
-`~/.claude/projects`) and **push** what they find to the cluster over the WARP network:
+Collection stays on your machine — it reads `~/.claude/projects` — and **pushes** what it
+finds to the cluster over the WARP network:
 
 ```
  local machine                          │  k3s (social-update ns, acer-laptop)
  ─────────────                          │  ────────────────────────────────────
- collectors ──POST /api/ingest──────────┼──► Express ──► SQLite (/data PVC)
-  github   (INGEST_URL)                 │       ▲              │
-  obsidian                              │       │   web UI ──► POST /api/generate
-  claude code                           │       │              │
+ collect agent ──POST /api/ingest───────┼──► Express ──► SQLite (/data PVC)
+  ├ sub-agent per session (INGEST_URL)  │       ▲              │
+  ├ claude-import.js                    │       │   web UI ──► POST /api/generate
+  └ claude-tag.js ──POST /api/items/tags┤       │              │
                                         │       │     in-pod `claude` CLI ──► drafts
  browser (WARP) ──https://social.itguys.ro──────┘                            (copy/paste)
 ```
 
-- **Collectors** map source records → `items` rows, deduped by `UNIQUE(source, external_id)`.
-  With `INGEST_URL` set they POST to `/api/ingest`; unset, they write a local DB (dev).
+- **Collection** is an agent run, not a parser — see "Collection" below. One `items` row per
+  Claude Code session, keyed `UNIQUE(source, external_id)` on the session id, upserted so a
+  session that grows gets a fresh summary. With `INGEST_URL` set it POSTs to `/api/ingest`;
+  unset, it writes a local DB (dev).
 - **Generate** sends a week's items + your manual notes + `prompt.txt` to the `claude` CLI
   running **in the cluster pod** (auth via `CLAUDE_CODE_OAUTH_TOKEN`), which returns a JSON
   array of drafts. Each generation is saved to `drafts`.
@@ -54,11 +55,11 @@ flowchart TB
         SVC["social-collect.service<br/>enqueue 'daily'"]
         POLL["social-collect-poll.sh<br/>(poller: timer + UI runs)"]
         WD["social-collect-watchdog.sh<br/>probe ingest canary · run collectors"]
-        COL["collect.ts (per-source, fault-isolated)"]
-        SRC_GH["github — authed gh events"]
-        SRC_OB["obsidian — vault (read-only)"]
-        SRC_CC["claude-code — ~/.claude/projects transcripts"]
-        SRC_CW["claude-web — payload dropped by an attended browser session"]
+        COL["collect.ts → claude -p (orchestrator)"]
+        SCAN["claude-sessions.js<br/>new/changed transcripts → manifest"]
+        SUB["session-summarizer sub-agents<br/>--model haiku · one per session"]
+        IMP["claude-import.js<br/>validate + batch insert"]
+        TAG["claude-tag.js<br/>cross-session tag pass"]
     end
 
     subgraph cluster["k3s · social.itguys.ro (acer-laptop, WARP-only)"]
@@ -86,8 +87,9 @@ flowchart TB
 
     T1 --> SVC --> POLL
     POLL --> WD --> COL
-    COL --> SRC_GH & SRC_OB & SRC_CC & SRC_CW
-    SRC_GH & SRC_OB & SRC_CC & SRC_CW -->|POST /api/ingest| ING
+    COL --> SCAN --> SUB --> IMP
+    IMP -->|POST /api/ingest| ING
+    COL --> TAG -->|POST /api/items/tags| ING
     ING --> DB
     DB --> UI
     UI -->|Generate| GEN --> CLI --> DRAFTS
@@ -107,16 +109,15 @@ flowchart TB
     BR --> CANVAS
 
     classDef claude fill:#d97757,stroke:#7a3b22,color:#fff;
-    class CLI,VD,VW,VI,VGE,VR,SRC_CW claude;
+    class CLI,VD,VW,VI,VGE,VR,COL,SUB claude;
 ```
 
 > Highlighted = a `claude` process runs. Note graphify: the **post-commit hook is AST-only, no
 > LLM** (`graphify update` + `global add`) — Claude is *not* called on commit. The LLM backend
 > (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
-> (claude-web) is also the odd one out: it does **not** run inference — it reads chat
-> history out of *your* logged-in claude.ai session in a real browser (Cloudflare Turnstile blocks
-> automated browsers). The genuine model calls are the in-pod Opus drafter (`/api/generate`)
-> and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox = Haiku).
+> Collection itself is now a model call too: an orchestrating `claude -p` run plus one Haiku
+> sub-agent per session transcript. The other genuine model calls are the in-pod Opus drafter
+> (`/api/generate`) and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox = Haiku).
 >
 > **Keeping the graph fresh:** each repo's slice of `global-graph.json` is refreshed on
 > every commit by its AST post-commit hook (`VGH`). The daily `vault-repos` job (`T5`) then
@@ -128,11 +129,10 @@ flowchart TB
 ## Prerequisites (collector machine)
 
 - Node.js (run inside WSL).
-- **`gh` CLI**, authenticated (the GitHub collector reuses its auth → includes private events).
+- **`claude` CLI**, authenticated — collection *is* an agent run (draft generation still
+  happens in the cluster pod, not here).
 - `~/.claude/projects` present (Claude Code session logs).
-- WARP connected (so the collector can reach `INGEST_URL` on the cluster).
-
-The `claude` CLI is **no longer needed locally** — generation runs in the cluster pod.
+- WARP connected (so the run can reach `INGEST_URL` on the cluster).
 
 ## Setup
 
@@ -146,22 +146,29 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 
 | Key | Meaning |
 |-----|---------|
-| `VAULT_PATH` | Obsidian vault root (read-only). `~` and `$HOME` are expanded; quote paths with spaces. |
-| `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). |
-| `CLAUDE_WEB_PAYLOAD` | Where the claude.ai browser step drops its JSON (default `~/.cache/social-update/claude-web.json`). The collector ingests it, then deletes it. See below. |
-| `CLAUDE_WEB_PAYLOAD_MAX_AGE_HOURS` | Ignore a payload older than this (default 36) so a forgotten file stops re-collecting the same week. |
-| `CLAUDE_WEB_LOOKBACK_DAYS` | How far back the browser script looks for touched conversations (default 7). |
-| `CLAUDE_WEB_BASE` | claude.ai API base (default `https://claude.ai`). Rarely changed. |
-| `GITHUB_USER` | GitHub username whose events the collector reads (via authed `gh`). |
-| `GITHUB_EXCLUDE_REPOS` | Comma-separated `owner/repo` to drop from collection; trailing `/*` excludes a whole owner. Empty = none. Editable from the UI ("GitHub repo filter" panel) — saved here, applied on the next collection run. |
-| `PORT` | Web server port (default 4000). |
-| `DB_PATH` | SQLite file location. |
+| `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). The collection source. |
+| `CLAUDE_WORK_DIR` | Scratch dir for the manifest, summaries, tags and the state file (default `~/.cache/social-update/claude`). |
+| `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
+| `CLAUDE_AGENT_TIMEOUT_MIN` | Hard ceiling on the orchestrating agent (default 45). On timeout the run salvages whatever summaries exist. |
+| `VAULT_PATH` | Obsidian vault root — used by the vault-keeper scripts, not by collection. `~` and `$HOME` are expanded; quote paths with spaces. |
+| `INGEST_URL` | Cluster base URL. Set → POST to `/api/ingest`; unset → write a local SQLite file. |
+| `PORT` | Web server port. |
+| `DB_PATH` | SQLite file location (local runs only). |
 
 ## Usage
 
 ```bash
-npm run collect    # run all collectors once → upserts into the DB
+npm run collect    # one collection run (spawns the agent) → upserts into the DB
 npm start          # serve API + web UI at http://localhost:$PORT
+```
+
+The individual steps, for debugging a run by hand:
+
+```bash
+npm run collect:sessions   # scan → ~/.cache/social-update/claude/manifest.json
+npm run summary:validate ~/.cache/social-update/claude/summaries
+npm run collect:import     # validate every summary + batch insert
+npm run collect:tag        # apply ~/.cache/social-update/claude/tags.json
 ```
 
 Open the UI, pick a week, optionally add manual (work/NDA) items the collectors can't see,
@@ -200,50 +207,37 @@ journalctl --user -t social-collect -n 30            # run logs
 > linger). The unit files live under `scripts/systemd/` so they're version-controlled and can't
 > silently disappear the way the old Windows Scheduled Task did.
 
-### claude.ai web conversations (attended browser step)
+### Collection: what actually runs
 
-The `claude-web` collector pulls your claude.ai chat history. There is no public
-API for it (the Anthropic API is stateless), and claude.ai's Cloudflare Turnstile
-blocks any freshly-launched automated browser — headless or headful — so the data
-can only be read from a browser you already cleared during normal use.
+`npm run collect` does not parse anything itself. It scans for session transcripts that are
+new or have grown since the last successful import, writes a manifest, and hands the whole
+job to one `claude -p` agent (`prompts/collect-agent.md`):
 
-That browser is reached through the **Claude-in-Chrome extension**, from an
-interactive Claude Code session. This step cannot be automated: an unattended
-`claude -p --chrome` run is refused by an auto-mode safety classifier
-(`[Browser JS Exfil]`) that sits outside the permission system, so
-`--permission-mode bypassPermissions` does not clear it. Rather than make the
-daily timer depend on a human being present, the browser step is decoupled from
-it — you drop a payload whenever convenient, and the next collector run ingests
-it.
+1. **Fan out** — one `session-summarizer` sub-agent per manifest entry, on Haiku
+   (`.claude/agents/session-summarizer.md`). Each reads its own transcript in full and writes
+   `<work dir>/summaries/<session_id>.json`.
+2. **Self-correct** — each sub-agent runs `dist/summary-validate.js` on its own file. The
+   validator names the offending field and exits nonzero, so the sub-agent fixes and retries
+   rather than shipping something the importer would drop.
+3. **Import** — `dist/claude-import.js` re-validates every file and writes them in ONE batch.
+   A session whose summary is missing or invalid keeps its state entry and comes back on the
+   next run; nothing is silently lost.
+4. **Tag** — the orchestrator reads all the summaries and assigns tags across the whole batch
+   at once, then applies them with `dist/claude-tag.js`. One pass on purpose: a tag is only
+   useful if two sessions about the same thing get the *same* one, which a per-session tagger
+   cannot guarantee.
 
-In a Claude Code session with the Chrome extension paired, ask for the claude.ai
-payload. The step is **paged**, because a browser tool result is capped at around
-a kilobyte and an oversized one comes back silently truncated — which is corrupt
-JSON, not an error:
+Why an agent instead of a parser: the old collector took each session's **first prompt** as
+the item — the question, never the answer. The summary is built from the whole transcript, so
+a week's items say what was actually done.
 
-```bash
-CLAUDE_WEB_OFFSET=0 CLAUDE_WEB_LIMIT=2 npm run claude-web:script   # prints the in-page script
-```
+Cost control lives in `CLAUDE_LOOKBACK_DAYS` and the state file. Steady state is a handful of
+sub-agents a day; a **first run backfills the entire lookback window at once**, so check
+`npm run collect:sessions` before the first run and lower the window if the count surprises
+you.
 
-1. Open `https://claude.ai/recents` in the paired browser.
-2. Run that script there with the extension's `javascript_tool`.
-3. Pipe the result into `npm run claude-web:append` (dedups on uuid, so
-   re-running a page is harmless).
-4. Repeat with `CLAUDE_WEB_OFFSET` advanced by `CLAUDE_WEB_LIMIT` until a page
-   comes back short.
-
-The next `npm run collect` (or the daily timer) picks the accumulated payload up,
-inserts what is new, and deletes the file.
-
-> Worth removing eventually: the page can reach the ingest host directly (only
-> CORS blocks it, not the network). Allowing the `https://claude.ai` origin on
-> `POST /api/ingest` would let the script post straight there and drop the paging
-> and the payload file entirely. Nothing else on the box is involved — no display, no debug
-port, no second Chrome profile.
-
-> A missing or stale payload is a normal outcome, not an error: `claude-web`
-> logs that it collected nothing and every other source still runs. It never
-> fails the run.
+> The state file (`<work dir>/state.json`) advances only for sessions that actually landed in
+> the DB. Delete it to force a full re-summarize of the window.
 
 ### Legacy: Windows Task Scheduler (deprecated)
 
@@ -300,16 +294,19 @@ no human PAT).
 
 ### Pointing collectors at the cluster
 
-Set `INGEST_URL="https://social.itguys.ro"` in the collector machine's `.env`. The collectors
-then POST to `/api/ingest` instead of opening a local DB (no token — WARP is the gate). The
-`GITHUB_EXCLUDE_REPOS` filter is set in the UI and stored in the cluster DB; the collector
-reads it back via `GET /api/settings`.
+Set `INGEST_URL="https://social.itguys.ro"` in the collector machine's `.env`. The run then
+POSTs summaries to `/api/ingest` and tags to `/api/items/tags` instead of opening a local DB
+(no token — WARP is the gate).
 
 ## Data model
 
 - **`items`** — `source, external_id, title, body, url, occurred_at, iso_week, collected_at,
-  raw_json`. `iso_week` is the ISO week of `occurred_at`, so late collection files items into
-  the week they actually happened.
+  raw_json, ignored, tags`. `iso_week` is the ISO week of `occurred_at`, so late collection
+  files items into the week they actually happened — and an upsert deliberately leaves it
+  alone, so a session resumed weeks later does not migrate out of a week already drafted.
+  `tags` is a JSON array assigned by the run's tagging pass; NULL means "not tagged yet".
+  Rows from the retired `github`, `obsidian` and `claude-web` sources are still there — the
+  history is kept, only the collectors are gone.
 - **`drafts`** — `created_at, iso_week, input_snapshot, prompt_used, output` (JSON draft array).
 
 ## Voice

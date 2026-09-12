@@ -25,7 +25,7 @@ import { DatabaseSync } from "node:sqlite";
 import { config } from "dotenv";
 import { expandHome } from "./paths";
 
-config();
+config({ quiet: true });
 
 const VAULT = expandHome(process.env.VAULT_PATH ?? "~/obsidian.md");
 const PROJECTS_ROOT = path.join(os.homedir(), "projects");

@@ -4,7 +4,7 @@ import path from "path";
 import { isoWeek } from "./week";
 import { expandHome } from "./paths";
 
-config();
+config({ quiet: true });
 
 const DB_PATH = expandHome(
   process.env.DB_PATH ?? path.join(__dirname, "..", "social.sqlite")
@@ -42,11 +42,6 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_drafts_iso_week ON drafts(iso_week);
 
-  CREATE TABLE IF NOT EXISTS settings (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-  );
-
   -- One row per collection run requested from the UI button or the daily timer.
   -- The local poller claims a pending row, runs the watchdog, then reports back.
   CREATE TABLE IF NOT EXISTS collect_runs (
@@ -61,29 +56,23 @@ db.exec(`
   );
 `);
 
-// Migration: per-item "ignored" flag. Ignored items stay tracked (so collectors
-// don't re-pull them via UNIQUE(source, external_id)) but the draft generator
-// skips them. Guarded ALTER — ADD COLUMN throws if the column already exists.
+// Migrations on `items`. ADD COLUMN throws if the column is already there, so
+// each is guarded against the live table shape.
+//   ignored — item stays tracked (collectors must not re-pull it via
+//             UNIQUE(source, external_id)) but the draft generator skips it.
+//   tags    — JSON array of strings, assigned across a whole run by the tagging
+//             pass so the vocabulary stays consistent between sessions. NULL
+//             means "not tagged yet", which is distinct from "[]" = no tag fits.
 {
-  const cols = db.prepare("PRAGMA table_info(items)").all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === "ignored")) {
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(items)").all() as Array<{ name: string }>).map((c) => c.name)
+  );
+  if (!cols.has("ignored")) {
     db.exec("ALTER TABLE items ADD COLUMN ignored INTEGER NOT NULL DEFAULT 0");
   }
-}
-
-// Single source of truth for collector/UI settings (e.g. GITHUB_EXCLUDE_REPOS).
-// Lives in the DB so the remote UI and the local collector share one value.
-const getSettingStmt = db.prepare(`SELECT value FROM settings WHERE key = ?`);
-const setSettingStmt = db.prepare(
-  `INSERT INTO settings (key, value) VALUES (@key, @value)
-   ON CONFLICT(key) DO UPDATE SET value = excluded.value`
-);
-export function getSetting(key: string): string {
-  const row = getSettingStmt.get(key) as { value: string } | undefined;
-  return row?.value ?? "";
-}
-export function setSetting(key: string, value: string): void {
-  setSettingStmt.run({ key, value });
+  if (!cols.has("tags")) {
+    db.exec("ALTER TABLE items ADD COLUMN tags TEXT");
+  }
 }
 
 // Shared insert path for every collector. Dedup via UNIQUE(source, external_id) + INSERT OR IGNORE.
@@ -98,14 +87,25 @@ export interface ItemInput {
   raw_json?: string | null;
 }
 
+// Upsert, not INSERT OR IGNORE. A Claude session is summarized again once it
+// grows, and the fresh summary has to replace the stale one. What is deliberately
+// NOT updated is occurred_at/iso_week: an item stays filed under the week it first
+// appeared, so a session resumed weeks later does not silently migrate out of a
+// week whose drafts are already written. Tags are left alone too — the tagging
+// pass owns that column and runs after this one.
 const insertStmt = db.prepare(`
-  INSERT OR IGNORE INTO items
+  INSERT INTO items
     (source, external_id, title, body, url, occurred_at, iso_week, collected_at, raw_json)
   VALUES
     (@source, @external_id, @title, @body, @url, @occurred_at, @iso_week, @collected_at, @raw_json)
+  ON CONFLICT(source, external_id) DO UPDATE SET
+    title    = excluded.title,
+    body     = excluded.body,
+    url      = excluded.url,
+    raw_json = excluded.raw_json
 `);
 
-// Returns the number of rows actually inserted (duplicates ignored).
+// Returns the number of rows written — inserted or refreshed in place.
 // node:sqlite has no transaction() helper, so wrap the batch by hand.
 export function insertItems(items: ItemInput[]): number {
   const collected_at = new Date().toISOString();
@@ -137,7 +137,7 @@ export function insertItems(items: ItemInput[]): number {
 // All NON-ignored items for a week, newest first — used to build the generation
 // prompt. Ignored items are deliberately excluded so they never reach the draft.
 const weekItemsStmt = db.prepare(
-  `SELECT id, source, title, body, url, occurred_at
+  `SELECT id, source, title, body, url, occurred_at, tags
      FROM items
     WHERE iso_week = ? AND ignored = 0
     ORDER BY occurred_at DESC`
@@ -149,6 +149,7 @@ export function getWeekItems(week: string): Array<{
   body: string | null;
   url: string | null;
   occurred_at: string | null;
+  tags: string | null;
 }> {
   return weekItemsStmt.all(week) as any;
 }
@@ -157,6 +158,16 @@ export function getWeekItems(week: string): Array<{
 const setIgnoredStmt = db.prepare(`UPDATE items SET ignored = @ignored WHERE id = @id`);
 export function setItemIgnored(id: number, ignored: boolean): boolean {
   const res = setIgnoredStmt.run({ id, ignored: ignored ? 1 : 0 });
+  return Number(res.changes) > 0;
+}
+
+// Tags are written by external_id because the tagging pass works from the summary
+// files, which carry the session id — it never sees the DB's primary keys.
+const setTagsStmt = db.prepare(
+  `UPDATE items SET tags = @tags WHERE source = @source AND external_id = @external_id`
+);
+export function setItemTags(source: string, external_id: string, tags: string[]): boolean {
+  const res = setTagsStmt.run({ source, external_id, tags: JSON.stringify(tags) });
   return Number(res.changes) > 0;
 }
 

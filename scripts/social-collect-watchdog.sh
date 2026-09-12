@@ -17,11 +17,11 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
-# claude.ai collection is payload-driven and needs nothing from this box: the
-# browser step runs in an attended Claude Code session through the Chrome
-# extension (an unattended one is refused by an auto-mode classifier), and drops
-# a payload the next run ingests. No display, no debug port, no second profile.
-# A missing payload just means claude-web collects nothing this run.
+# Collection is one `claude -p` agent run that fans out a sub-agent per new or
+# changed session transcript (see src/claude.ts). It needs the `claude` CLI on
+# PATH and nothing else — no browser, no display, no debug port. A run with no
+# new sessions exits clean having written nothing.
+command -v claude >/dev/null || { echo "ERROR: claude CLI not on PATH — collection cannot run"; exit 1; }
 
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"

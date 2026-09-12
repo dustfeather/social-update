@@ -6,8 +6,7 @@ import db, {
   getDrafts,
   updateDraftOutput,
   insertItems,
-  getSetting,
-  setSetting,
+  setItemTags,
   enqueueRun,
   claimNextRun,
   finishRun,
@@ -17,14 +16,15 @@ import db, {
 } from "./db";
 import { generateDrafts } from "./generate";
 
-config();
+config({ quiet: true });
 
 const PORT = Number(process.env.PORT ?? 4000);
 const WEEK_RE = /^\d{4}-W\d{2}$/;
 
 const app = express();
-// Collectors POST full GitHub event payloads (raw_json) in a batch — well over the
-// 100kb default. 32mb mirrors the collector's gh --paginate buffer ceiling.
+// A collection run POSTs every session summary of the run in one batch, each with
+// its raw_json. Well over the 100kb default; 32mb leaves room for a long backlog
+// draining in a single pass.
 app.use(express.json({ limit: "32mb" }));
 
 // Prepared statements (reused across requests).
@@ -36,7 +36,7 @@ const weeksStmt = db.prepare(
     ORDER BY iso_week DESC`
 );
 const itemsStmt = db.prepare(
-  `SELECT id, source, external_id, title, body, url, occurred_at, iso_week, collected_at, ignored
+  `SELECT id, source, external_id, title, body, url, occurred_at, iso_week, collected_at, ignored, tags
      FROM items
     WHERE iso_week = ?
     ORDER BY occurred_at DESC
@@ -137,51 +137,26 @@ function safeParse(s: string): unknown {
   }
 }
 
-const parseList = (s: string) =>
-  s
-    .split(",")
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-// Distinct GitHub repos seen in collected items — the pick-list for the exclude UI.
-const githubReposStmt = db.prepare(
-  `SELECT DISTINCT json_extract(raw_json, '$.repo.name') AS name
-     FROM items
-    WHERE source = 'github' AND name IS NOT NULL
-    ORDER BY name`
-);
-app.get("/api/github-repos", (_req, res) => {
-  res.json((githubReposStmt.all() as { name: string }[]).map((r) => r.name));
-});
-
-// Collector ingest. Collectors run locally but POST here (over the WARP network)
-// instead of opening the SQLite file directly — the DB lives in the cluster now.
-// Body: { items: ItemInput[] }. iso_week/collected_at are derived server-side.
-app.post("/api/ingest", (req, res) => {
-  const items = req.body?.items;
-  if (!Array.isArray(items)) {
-    return res.status(400).json({ error: "body must be { items: ItemInput[] }" });
+// Tag assignment from a collection run. Body: { source, tags: { external_id: [...] } }.
+// Keyed by external_id because the tagging pass works from the summary files and
+// never sees the DB's primary keys.
+app.post("/api/items/tags", (req, res) => {
+  const source = String(req.body?.source ?? "");
+  const tags = req.body?.tags;
+  if (!source) return res.status(400).json({ error: "source is required" });
+  if (typeof tags !== "object" || tags === null || Array.isArray(tags)) {
+    return res.status(400).json({ error: "tags must be an object of { external_id: string[] }" });
   }
-  for (const it of items) {
-    if (!it || typeof it.source !== "string" || typeof it.external_id !== "string") {
-      return res.status(400).json({ error: "each item needs a string source and external_id" });
+  for (const [id, list] of Object.entries(tags)) {
+    if (!Array.isArray(list) || list.some((t) => typeof t !== "string")) {
+      return res.status(400).json({ error: `tags["${id}"] must be an array of strings` });
     }
   }
-  const inserted = insertItems(items as ItemInput[]);
-  res.json({ received: items.length, inserted });
-});
-
-// Collector settings, stored in the DB so the remote UI and the local collector
-// share one value (collector reads this back via GET on each run).
-app.get("/api/settings", (_req, res) => {
-  res.json({ excludeRepos: parseList(getSetting("GITHUB_EXCLUDE_REPOS")) });
-});
-
-app.put("/api/settings", (req, res) => {
-  const raw = req.body?.excludeRepos;
-  const list = Array.isArray(raw) ? raw.map((s) => String(s).trim()).filter(Boolean) : [];
-  setSetting("GITHUB_EXCLUDE_REPOS", list.join(","));
-  res.json({ excludeRepos: list });
+  let updated = 0;
+  for (const [external_id, list] of Object.entries(tags as Record<string, string[]>)) {
+    if (setItemTags(source, external_id, list)) updated++;
+  }
+  res.json({ received: Object.keys(tags).length, updated });
 });
 
 // --- Manual collection trigger ----------------------------------------------
