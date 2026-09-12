@@ -217,18 +217,28 @@ it — you drop a payload whenever convenient, and the next collector run ingest
 it.
 
 In a Claude Code session with the Chrome extension paired, ask for the claude.ai
-payload. The three steps are:
+payload. The step is **paged**, because a browser tool result is capped at around
+a kilobyte and an oversized one comes back silently truncated — which is corrupt
+JSON, not an error:
 
 ```bash
-npm run claude-web:script          # prints the in-page script
+CLAUDE_WEB_OFFSET=0 CLAUDE_WEB_LIMIT=2 npm run claude-web:script   # prints the in-page script
 ```
 
 1. Open `https://claude.ai/recents` in the paired browser.
 2. Run that script there with the extension's `javascript_tool`.
-3. Save the result verbatim to `~/.cache/social-update/claude-web.json`.
+3. Pipe the result into `npm run claude-web:append` (dedups on uuid, so
+   re-running a page is harmless).
+4. Repeat with `CLAUDE_WEB_OFFSET` advanced by `CLAUDE_WEB_LIMIT` until a page
+   comes back short.
 
-The next `npm run collect` (or the daily timer) picks it up, inserts what is new,
-and deletes the file. Nothing else on the box is involved — no display, no debug
+The next `npm run collect` (or the daily timer) picks the accumulated payload up,
+inserts what is new, and deletes the file.
+
+> Worth removing eventually: the page can reach the ingest host directly (only
+> CORS blocks it, not the network). Allowing the `https://claude.ai` origin on
+> `POST /api/ingest` would let the script post straight there and drop the paging
+> and the payload file entirely. Nothing else on the box is involved — no display, no debug
 port, no second Chrome profile.
 
 > A missing or stale payload is a normal outcome, not an error: `claude-web`
