@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { htmlToText, textToHtml, firstUrl } from "./draft-text";
 import {
   fetchWeeks,
   fetchItems,
@@ -9,6 +10,7 @@ import {
   requestCollect,
   fetchCollectStatus,
   setItemIgnored,
+  saveDrafts,
   type WeekRow,
   type Item,
   type Draft,
@@ -25,6 +27,8 @@ export default function App() {
   const [total, setTotal] = useState(0);
   const [manualText, setManualText] = useState("");
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [draftId, setDraftId] = useState<number | null>(null); // row the edits save back onto
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +58,8 @@ export default function App() {
     setWeek(w);
     setPage(1);
     setDrafts([]);
+    setDraftId(null);
+    setSaveState("idle");
     setError(null);
   }
 
@@ -63,6 +69,8 @@ export default function App() {
     try {
       const res = await generate(week, manualText);
       setDrafts(res.drafts);
+      setDraftId(res.draftId);
+      setSaveState("idle");
       if (res.drafts.length === 0) setError("Model returned no drafts — not enough material this week.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "generation failed");
@@ -82,6 +90,26 @@ export default function App() {
       setItems((prev) => prev.map((p) => (p.id === it.id ? { ...p, ignored: it.ignored } : p)));
       setError(e instanceof Error ? e.message : "ignore failed");
     }
+  }
+
+  // Edits are debounced back onto the draft row: the editor fires on every
+  // keystroke, and a PUT per character would be absurd. The timer is keyed to
+  // the whole array so a change to any card restarts the same 800ms window.
+  const pendingSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function editDraft(index: number, next: Draft) {
+    setDrafts((prev) => {
+      const copy = prev.map((d, i) => (i === index ? next : d));
+      if (draftId !== null) {
+        if (pendingSave.current) clearTimeout(pendingSave.current);
+        setSaveState("saving");
+        pendingSave.current = setTimeout(() => {
+          saveDrafts(draftId, copy)
+            .then(() => setSaveState("saved"))
+            .catch(() => setSaveState("error"));
+        }, 800);
+      }
+      return copy;
+    });
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -164,9 +192,19 @@ export default function App() {
 
       {drafts.length > 0 && (
         <section className="drafts">
-          <h2>Drafts</h2>
+          <h2>
+            Drafts
+            {saveState !== "idle" && (
+              <span className={`save-state save-${saveState}`}>
+                {saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : "save failed"}
+              </span>
+            )}
+          </h2>
+          <p className="hint">
+            Editable — format the text and add links, then share. Edits save automatically.
+          </p>
           {drafts.map((d, i) => (
-            <DraftCard key={i} draft={d} />
+            <DraftCard key={i} draft={d} onChange={(next) => editDraft(i, next)} />
           ))}
         </section>
       )}
@@ -337,20 +375,241 @@ function RepoSettings() {
   );
 }
 
-function DraftCard({ draft }: { draft: Draft }) {
+// --- Draft editing -----------------------------------------------------------
+
+const X_LIMIT = 280;
+
+// Only X still reliably honours a prefilled body. LinkedIn's shareActive composer
+// usually does; Facebook's sharer dropped `quote` and takes a URL only. So every
+// share copies the text to the clipboard first — the tab that opens may come up
+// empty, and pasting is then one keystroke rather than a lost draft.
+const SHARES: Array<{ key: string; label: string; href: (text: string) => string }> = [
+  {
+    key: "x",
+    label: "X",
+    href: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}`,
+  },
+  {
+    key: "linkedin",
+    label: "LinkedIn",
+    href: (t) => `https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(t)}`,
+  },
+  {
+    key: "facebook",
+    label: "Facebook",
+    href: (t) => {
+      const u = firstUrl(t);
+      return u
+        ? `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}`
+        : "https://www.facebook.com/";
+    },
+  },
+];
+
+function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) => void }) {
   const [copied, setCopied] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [linkUrl, setLinkUrl] = useState("");
+  const editor = useRef<HTMLDivElement | null>(null);
+  const savedRange = useRef<Range | null>(null);
+
+  // The editor is UNCONTROLLED on purpose: re-rendering a contenteditable from
+  // React state on every keystroke resets the caret to the start. Seed it once,
+  // then read back out of the DOM.
+  const initialHtml = useRef(draft.html ?? textToHtml(draft.text));
+
+  function syncFromEditor() {
+    const el = editor.current;
+    if (!el) return;
+    onChange({ ...draft, html: el.innerHTML, text: htmlToText(el) });
+  }
+
+  // execCommand is deprecated but remains the only zero-dependency way to get
+  // bold/italic/lists/links inside contenteditable, and every current browser
+  // still implements it. Focus first so the command has a selection to act on.
+  function exec(command: string, value?: string) {
+    editor.current?.focus();
+    document.execCommand(command, false, value);
+    syncFromEditor();
+  }
+
+  // Opening the link box moves focus out of the editor, which drops the
+  // selection — stash the range first and restore it on apply.
+  function openLink() {
+    const sel = window.getSelection();
+    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    const selected = savedRange.current?.toString() ?? "";
+    setLinkUrl(/^https?:\/\//.test(selected) ? selected : "");
+    setLinkOpen(true);
+  }
+
+  function applyLink() {
+    const url = linkUrl.trim();
+    if (!url) {
+      setLinkOpen(false);
+      return;
+    }
+    const href = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`;
+    const el = editor.current;
+    const range = savedRange.current;
+    if (el && range) {
+      el.focus();
+      const sel = window.getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      if (range.collapsed) {
+        // Nothing was selected. createLink would be a no-op on a collapsed
+        // range, so insert the URL as text and select it back.
+        document.execCommand("insertText", false, href);
+        const after = window.getSelection();
+        const node = after?.anchorNode;
+        if (after && node) {
+          const r = document.createRange();
+          r.setStart(node, Math.max(0, after.anchorOffset - href.length));
+          r.setEnd(node, after.anchorOffset);
+          after.removeAllRanges();
+          after.addRange(r);
+        }
+      }
+      document.execCommand("createLink", false, href);
+      // execCommand can't set attributes, so open links in a new tab ourselves.
+      el.querySelectorAll("a").forEach((a) => {
+        a.setAttribute("target", "_blank");
+        a.setAttribute("rel", "noreferrer");
+      });
+      syncFromEditor();
+    }
+    setLinkOpen(false);
+    setLinkUrl("");
+  }
+
+  // Copy both flavours: HTML for editors that accept it, plain text for the
+  // social composers that don't.
   async function copy() {
-    await navigator.clipboard.writeText(draft.text);
+    try {
+      if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
+        await navigator.clipboard.write([
+          new ClipboardItem({
+            "text/html": new Blob([draft.html ?? textToHtml(draft.text)], { type: "text/html" }),
+            "text/plain": new Blob([draft.text], { type: "text/plain" }),
+          }),
+        ]);
+      } else {
+        await navigator.clipboard.writeText(draft.text);
+      }
+    } catch {
+      await navigator.clipboard.writeText(draft.text);
+    }
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   }
+
+  function share(href: string) {
+    // Open the composer INSIDE the click's user activation. Awaiting the
+    // clipboard first spends the gesture — the tab then gets popup-blocked —
+    // and an unfocused document can leave writeText pending forever, which
+    // looks like a dead button. Copy afterwards, best-effort.
+    window.open(href, "_blank", "noopener,noreferrer");
+    navigator.clipboard.writeText(draft.text).catch(() => {});
+  }
+
+  const chars = draft.text.length;
+
   return (
     <article className="card">
       <div className="card-head">
         <span className="angle">{draft.angle}</span>
+        <span className={`count${chars > X_LIMIT ? " count-over" : ""}`}>{chars} chars</span>
         <button onClick={copy}>{copied ? "Copied ✓" : "Copy"}</button>
       </div>
-      <pre className="card-text">{draft.text}</pre>
+
+      <div className="toolbar">
+        {/* onMouseDown+preventDefault keeps the editor's selection alive: a plain
+            click blurs the editor before the command can run. */}
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title="Bold">
+          <b>B</b>
+        </button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title="Italic">
+          <i>I</i>
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => exec("insertUnorderedList")}
+          title="Bulleted list"
+        >
+          • List
+        </button>
+        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={openLink} title="Add link">
+          🔗 Link
+        </button>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => exec("removeFormat")}
+          title="Clear formatting"
+        >
+          Clear
+        </button>
+      </div>
+
+      {linkOpen && (
+        <div className="linkbar">
+          <input
+            autoFocus
+            value={linkUrl}
+            placeholder="https://example.com"
+            onChange={(e) => setLinkUrl(e.target.value)}
+            onKeyDown={(e) => {
+              // preventDefault matters: applyLink() puts focus and the saved
+              // selection back INSIDE the editor, so an un-prevented Enter lands
+              // there as a line break and replaces the very text being linked.
+              if (e.key === "Enter") {
+                e.preventDefault();
+                applyLink();
+              }
+              if (e.key === "Escape") {
+                e.preventDefault();
+                setLinkOpen(false);
+              }
+            }}
+          />
+          <button onClick={applyLink}>Apply</button>
+          <button onClick={() => setLinkOpen(false)}>Cancel</button>
+        </div>
+      )}
+
+      <div
+        className="card-text editor"
+        ref={editor}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={syncFromEditor}
+        onBlur={syncFromEditor}
+        dangerouslySetInnerHTML={{ __html: initialHtml.current }}
+      />
+
+      <div className="share">
+        <span className="share-label">Share</span>
+        {SHARES.map((s) => (
+          <button
+            key={s.key}
+            className={`share-btn share-${s.key}`}
+            onClick={() => share(s.href(draft.text))}
+            title={
+              s.key === "x" && chars > X_LIMIT
+                ? `${chars} characters — X will cut this at ${X_LIMIT}`
+                : `Copy the text and open ${s.label}`
+            }
+          >
+            {s.label}
+          </button>
+        ))}
+        <span className="hint share-hint">
+          Text is copied to your clipboard first — Facebook (and sometimes LinkedIn) won't prefill
+          it, so paste into the composer.
+        </span>
+      </div>
     </article>
   );
 }

@@ -174,6 +174,13 @@ export function saveDraft(d: {
   return Number(res.lastInsertRowid);
 }
 
+// The UI edits drafts in place (rich-text editor), so the stored output is
+// rewritten rather than versioned — a regenerate already inserts a new row.
+const updateDraftStmt = db.prepare(`UPDATE drafts SET output = @output WHERE id = @id`);
+export function updateDraftOutput(id: number, output: string): boolean {
+  return Number(updateDraftStmt.run({ id, output }).changes) > 0;
+}
+
 const draftsByWeekStmt = db.prepare(
   `SELECT id, created_at, iso_week, output FROM drafts WHERE iso_week = ? ORDER BY created_at DESC`
 );

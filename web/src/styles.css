@@ -198,6 +198,120 @@ textarea {
   margin: 0;
 }
 
+/* --- Draft editor ------------------------------------------------------- */
+
+.count {
+  margin-left: auto;
+  margin-right: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.count-over {
+  color: #ffab5e;
+}
+
+.toolbar {
+  display: flex;
+  gap: 4px;
+  margin-bottom: 6px;
+}
+
+.toolbar button {
+  padding: 2px 8px;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.linkbar {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.linkbar input {
+  flex: 1;
+  padding: 4px 8px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+/* contenteditable: keep pre-wrap so the generated line breaks survive, but let
+   the editor grow with the text instead of scrolling in a fixed box. */
+.editor {
+  min-height: 120px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  outline: none;
+}
+
+.editor:focus {
+  border-color: var(--accent);
+}
+
+.editor a {
+  color: var(--accent);
+}
+
+.editor ul {
+  margin: 4px 0;
+  padding-left: 20px;
+}
+
+.share {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.share-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.share-btn {
+  padding: 3px 10px;
+  font-size: 13px;
+}
+
+/* Brand tints, kept as a left edge rather than a full fill so the buttons stay
+   consistent with the rest of the dark UI. */
+.share-x {
+  border-left: 3px solid #e7e9ea;
+}
+
+.share-linkedin {
+  border-left: 3px solid #0a66c2;
+}
+
+.share-facebook {
+  border-left: 3px solid #1877f2;
+}
+
+.share-hint {
+  flex-basis: 100%;
+  font-size: 12px;
+}
+
+.save-state {
+  margin-left: 8px;
+  font-size: 12px;
+  font-weight: normal;
+  color: var(--muted);
+}
+
+.save-error {
+  color: #ff6b6b;
+}
+
 .settings {
   margin-top: 32px;
   border-top: 1px solid var(--border);

@@ -26,7 +26,10 @@ export interface ItemsPage {
 
 export interface Draft {
   angle: string;
+  /** Plain text — this is what gets pasted into a social composer. */
   text: string;
+  /** Rich-text markup from the editor. Absent on a freshly generated draft. */
+  html?: string;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -98,4 +101,14 @@ export async function generate(week: string, manualText: string): Promise<{ draf
   });
   if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `generate failed (${res.status})`);
   return res.json();
+}
+
+// Persist in-place edits to a generated draft row (rich-text editor + links).
+export async function saveDrafts(draftId: number, drafts: Draft[]): Promise<void> {
+  const res = await fetch(`/api/drafts/${draftId}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ drafts }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `save failed (${res.status})`);
 }

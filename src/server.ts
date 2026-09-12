@@ -4,6 +4,7 @@ import fs from "fs";
 import { config } from "dotenv";
 import db, {
   getDrafts,
+  updateDraftOutput,
   insertItems,
   getSetting,
   setSetting,
@@ -86,6 +87,30 @@ app.get("/api/drafts", (req, res) => {
     drafts: safeParse(r.output),
   }));
   res.json(rows);
+});
+
+// Save edited drafts back onto an existing row. The UI edits in place (each
+// draft carries `html` for the rich-text editor plus the `text` that is what
+// actually gets pasted into a social composer), so this overwrites `output`
+// rather than inserting — a regenerate is what creates a new row.
+app.put("/api/drafts/:id", (req, res) => {
+  const id = Number(req.params.id);
+  const drafts = req.body?.drafts;
+  if (!Number.isInteger(id) || id <= 0) {
+    return res.status(400).json({ error: "id must be a positive integer" });
+  }
+  if (!Array.isArray(drafts) || drafts.some((d) => typeof d?.text !== "string")) {
+    return res.status(400).json({ error: "drafts must be an array of { angle, text, html? }" });
+  }
+  const clean = drafts.map((d: any) => ({
+    angle: String(d.angle ?? ""),
+    text: String(d.text),
+    html: typeof d.html === "string" ? d.html : undefined,
+  }));
+  if (!updateDraftOutput(id, JSON.stringify(clean))) {
+    return res.status(404).json({ error: `no draft row ${id}` });
+  }
+  res.json({ ok: true });
 });
 
 // Generate drafts for a week from its items + optional manual text via the claude CLI.
