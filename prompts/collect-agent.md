@@ -19,12 +19,11 @@ next. Twenty-five separate tool-use blocks in the same assistant turn, then the
 next twenty-five in the turn after that, until the manifest is exhausted. There
 is no cap on the total.
 
-This is the single thing that decides whether the run takes ten minutes or two
-hours, and it is easy to get wrong without noticing: a previous run dispatched
-25 sub-agents one per message and produced one summary every 26 seconds, turning
-a 152-session backfill into a 67-minute serial crawl. Each sub-agent takes about
-the same time whether it runs alone or alongside two dozen others, so the whole
-cost of the step is (sessions ÷ per-message width) × one sub-agent.
+This decides whether the run takes ten minutes or two hours. Each sub-agent
+takes about the same time whether it runs alone or alongside two dozen others,
+so the cost of this step is (sessions ÷ per-message width) × one sub-agent. One
+observed run did dispatch one per message — 22 dispatches over 21 messages —
+which is the failure this paragraph exists to prevent.
 
 Each dispatch is six lines — deliberately small, so that twenty-five of them in
 one message stay cheap to emit:
