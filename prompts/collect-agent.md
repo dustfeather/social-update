@@ -39,8 +39,8 @@ one message stay cheap to emit:
 
 The sub-agent knows the schema and the validation loop from its own definition;
 it prints the contract with `summary-validate.js --schema`. Do not paste the
-schema into the dispatch — that is what made an earlier version fall back to one
-sub-agent per message.
+schema into the dispatch: it is identical for every sub-agent, and repeating it
+twenty-five times per message is a large cost for nothing.
 
 Wait for every sub-agent in a wave to finish before going on to Step 2, but do
 not wait between waves: dispatch the next wave as soon as the previous message
