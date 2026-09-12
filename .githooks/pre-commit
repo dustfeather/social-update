@@ -1,6 +1,7 @@
 #!/bin/sh
-# Pre-commit gate: lint + typecheck + tests. Each runs only if its package.json
-# script exists. The same checks run in CI via shared-workflows node-test.yml.
+# Pre-commit gate: lint + typecheck + build + tests. Each runs only if its
+# package.json script exists. The same checks run in CI via shared-workflows
+# node-test.yml.
 set -eu
 cd "$(git rev-parse --show-toplevel)"
 PM=npm; [ -f pnpm-lock.yaml ] && PM=pnpm; { [ -f bun.lockb ] || [ -f bun.lock ]; } && PM=bun
@@ -10,5 +11,10 @@ if [ ! -d node_modules ]; then
 fi
 has() { node -e "process.exit((require('./package.json').scripts||{})['$1']?0:1)" 2>/dev/null; }
 run() { echo "[pre-commit] $1…"; case "$PM" in pnpm) pnpm run "$1";; bun) bun run "$1";; *) npm run --silent "$1";; esac; }
-for s in lint typecheck test; do has "$s" && run "$s"; done
+for s in lint typecheck; do has "$s" && run "$s"; done
+# Build too, and prefer build:all where a repo has one: a root `build` is often
+# only half the tree (here it is the server tsc, which never looks at web/),
+# so typecheck alone lets a broken UI through.
+if has build:all; then run build:all; elif has build; then run build; fi
+has test && run test
 echo "[pre-commit] OK"

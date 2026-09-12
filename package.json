@@ -5,12 +5,13 @@
   "engines": {
     "node": ">=26"
   },
-  "description": "Local social journal — collect daily activity, generate copy-ready LinkedIn drafts.",
+  "description": "Local social journal \u2014 collect daily activity, generate copy-ready LinkedIn drafts.",
   "type": "commonjs",
   "scripts": {
     "build": "tsc",
     "build:web": "npm --prefix web install && npm --prefix web run build",
     "build:all": "npm run build && npm run build:web",
+    "test": "node --test web/src/*.test.mjs",
     "collect": "node dist/collect.js",
     "start": "node dist/server.js",
     "dev": "tsc --watch",
