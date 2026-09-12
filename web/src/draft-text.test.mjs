@@ -117,3 +117,12 @@ test("safeHref: bare domain gets https, other schemes refused", () => {
   assert.equal(safeHref("javascript:alert(1)"), null);
   assert.equal(safeHref("data:text/html,<script>"), null);
 });
+
+test("a script's source text never reaches the post body", () => {
+  const root = el("DIV", [
+    t("today"),
+    el("SCRIPT", [t("alert(1)")]),
+    el("STYLE", [t("b{color:red}")]),
+  ]);
+  assert.equal(htmlToText(root), "today");
+});

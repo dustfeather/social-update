@@ -2,6 +2,14 @@
 // exercised directly (see draft-text.test.mjs) — the DOM walk is the part that
 // decides what actually lands in a social composer.
 
+const ALLOWED_TAGS = new Set([
+  "B", "STRONG", "I", "EM", "U", "BR", "P", "DIV", "SPAN", "UL", "OL", "LI", "A",
+]);
+// Elements whose *contents* are not text and must go with them.
+const DROP_CONTENT = new Set([
+  "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE", "NOSCRIPT", "SVG", "MATH",
+]);
+
 // Social composers take PLAIN TEXT, not HTML — so the rich markup is only ever a
 // local convenience and the text is the artifact. Flatten block elements to
 // newlines, and spell out a link's href whenever it isn't already the anchor's
@@ -12,6 +20,10 @@ export function htmlToText(root: HTMLElement): string {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
     if (node.nodeType !== Node.ELEMENT_NODE) return "";
     const el = node as HTMLElement;
+    // A <script>/<style> body is not prose: without this its source text rides
+    // along into the post ("todaywindow.__mark()"). Pasted rich content can put
+    // one in the editor even though the sanitizer strips it on the way back out.
+    if (DROP_CONTENT.has(el.tagName.toUpperCase())) return "";
     const inner = Array.from(el.childNodes).map(walk).join("");
     switch (el.tagName) {
       case "BR":
@@ -69,13 +81,6 @@ export function firstUrl(text: string): string | null {
 // This builds the output from an allowlist instead of blacklisting tags, so an
 // unknown element cannot slip through: an element that isn't allowed is dropped
 // but its text is kept, and only the attributes named here are ever emitted.
-const ALLOWED_TAGS = new Set([
-  "B", "STRONG", "I", "EM", "U", "BR", "P", "DIV", "SPAN", "UL", "OL", "LI", "A",
-]);
-// Elements whose *contents* are not text and must go with them.
-const DROP_CONTENT = new Set([
-  "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE", "NOSCRIPT", "SVG", "MATH",
-]);
 const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 const escAttr = (s: string) => escText(s).replace(/"/g, "&quot;");
 
