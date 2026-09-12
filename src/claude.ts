@@ -64,7 +64,11 @@ function runAgent(prompt: string): Promise<void> {
           "Task",
           "Agent",
           "Read",
-          "Write",
+          // Write is scoped to the run's scratch directory. The agents have no
+          // business editing this repository, and an unattended run that edits
+          // source is a surprise waiting to be committed by whoever runs
+          // `git add -A` next.
+          `Write(${WORK_DIR}/**)`,
           "Glob",
           "Grep",
           `Bash(node ${REPO}/dist/summary-validate.js:*)`,

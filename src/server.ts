@@ -137,6 +137,30 @@ function safeParse(s: string): unknown {
   }
 }
 
+// Item batch from a collection run. Body: { items: ItemInput[] }. Upserts, so a
+// session resummarized after it grew replaces its earlier row. No auth token: the
+// collector reaches this over the same WARP private network as the web UI.
+app.post("/api/ingest", (req, res) => {
+  const items = req.body?.items;
+  if (!Array.isArray(items)) {
+    return res.status(400).json({ error: "items must be an array" });
+  }
+  for (const [i, item] of items.entries()) {
+    if (typeof item?.source !== "string" || !item.source) {
+      return res.status(400).json({ error: `items[${i}].source is required` });
+    }
+    if (typeof item?.external_id !== "string" || !item.external_id) {
+      return res.status(400).json({ error: `items[${i}].external_id is required` });
+    }
+  }
+  try {
+    res.json({ received: items.length, inserted: insertItems(items as ItemInput[]) });
+  } catch (err) {
+    console.error("[ingest]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "ingest failed" });
+  }
+});
+
 // Tag assignment from a collection run. Body: { source, tags: { external_id: [...] } }.
 // Keyed by external_id because the tagging pass works from the summary files and
 // never sees the DB's primary keys.
