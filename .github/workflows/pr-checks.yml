@@ -22,7 +22,7 @@ jobs:
   tests:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v4
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v5
     with:
       node-version: "26"
       run-build: true          # `npm run build` (tsc); lint/test/typecheck auto-skip (no such scripts)
@@ -33,7 +33,7 @@ jobs:
   web:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v4
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v5
     with:
       node-version: "26"
       working-dir: web
@@ -50,7 +50,7 @@ jobs:
       pull-requests: write
       issues: read
       id-token: write
-    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v4
+    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v5
     with:
       runner: arc-df-social-update
     secrets: inherit
