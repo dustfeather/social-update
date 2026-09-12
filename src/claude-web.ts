@@ -113,6 +113,16 @@ async function firstPrompt(get: Getter, org: string, convoId: string): Promise<s
 export async function collectClaudeWeb(): Promise<number> {
   if (!CLAUDE_CDP_URL) return 0; // not enabled → nothing to collect
 
+  // The watchdog sets this when it found no browser on the debug port AND no
+  // reachable X display to launch one on (WSLg's compositor dies with the
+  // Windows session). Attaching would just block until Playwright's 30s timeout
+  // and report FAILED for a source that never had a chance to run — a skip is
+  // the honest outcome. Turnstile rules out a headless fallback (see above).
+  if (process.env.CLAUDE_WEB_SKIP) {
+    console.log("[collect] claude-web: skipped — no reachable display for the CDP browser");
+    return 0;
+  }
+
   const rows = await withClaudeApi(async (get) => {
     const org = await findOrgUuid(get);
     if (!org) return [];
