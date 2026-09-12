@@ -42,8 +42,21 @@ function runAgent(prompt: string): Promise<void> {
       "claude",
       [
         "-p",
-        // A permission prompt in print mode is an instant denial, so the run has
-        // to be pre-authorized. What it is authorized for is deliberately narrow.
+        // WORK_DIR lives outside the repo, and `cwd` below is the only directory
+        // the agent may write to by default — an allowedTools `Write(...)` rule
+        // grants a tool, not a sandbox root, so without this every sub-agent's
+        // write to the summary directory is refused with "may only create
+        // directories in the allowed working directories for this session".
+        "--add-dir",
+        WORK_DIR,
+        // No --permission-mode: the default leaves the allowlist below as the only
+        // thing that grants anything, which is the point. `acceptEdits` auto-approves
+        // every Write and Edit REGARDLESS of the allowlist, so with it set the path
+        // scope on Write is decorative — an earlier run of this collector edited
+        // src/claude.ts while nominally confined to the scratch directory. In print
+        // mode a non-allowlisted tool cannot prompt, so it is simply refused.
+        //
+        // What the run is authorized for is deliberately narrow.
         //
         // The sub-agents read session transcripts, and a transcript contains
         // whatever text ever passed through a session — pasted pages, repo files,
@@ -57,8 +70,6 @@ function runAgent(prompt: string): Promise<void> {
         //     already have Read.
         //   - no WebFetch/WebSearch: without an outbound channel, anything that did
         //     get through has nowhere to send what it found.
-        "--permission-mode",
-        "acceptEdits",
         "--allowedTools",
         [
           "Task",
