@@ -417,3 +417,10 @@ textarea {
   letter-spacing: normal;
   opacity: 0.75;
 }
+
+/* A url whose scheme safeHref refused. Shown, so the record stays complete, but
+   deliberately not a link — the point is that it is never clickable. */
+.item-url-refused {
+  color: var(--muted);
+  text-decoration: line-through dotted;
+}

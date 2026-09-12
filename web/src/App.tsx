@@ -35,6 +35,10 @@ function parseTags(raw: string | null): string[] {
 // The body is plain text written by the summarizer (a paragraph, then highlight
 // bullets), so it renders pre-wrapped rather than as markup.
 function ItemDetail({ item }: { item: Item }) {
+  // A stored url is collector-written, not user-typed, but it still reaches an
+  // href — and a `javascript:` there is script execution one click later. Refused
+  // schemes stay visible as text so the record is still complete, just not armed.
+  const href = item.url ? safeHref(item.url) : null;
   return (
     <div className="item-detail">
       {item.body ? (
@@ -67,9 +71,15 @@ function ItemDetail({ item }: { item: Item }) {
           <>
             <dt>Link</dt>
             <dd>
-              <a href={item.url} target="_blank" rel="noreferrer">
-                {item.url}
-              </a>
+              {href ? (
+                <a href={href} target="_blank" rel="noreferrer">
+                  {item.url}
+                </a>
+              ) : (
+                <span className="item-url-refused" title="Refused: not an http(s) or mailto URL">
+                  {item.url}
+                </span>
+              )}
             </dd>
           </>
         )}
