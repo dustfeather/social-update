@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { htmlToText, textToHtml, firstUrl } from "./draft-text";
+import { htmlToText, textToHtml, firstUrl, sanitizeHtml, sanitizeElement, safeHref } from "./draft-text";
 import {
   fetchWeeks,
   fetchItems,
@@ -416,12 +416,18 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // The editor is UNCONTROLLED on purpose: re-rendering a contenteditable from
   // React state on every keystroke resets the caret to the start. Seed it once,
   // then read back out of the DOM.
-  const initialHtml = useRef(draft.html ?? textToHtml(draft.text));
+  // Sanitized on the way in: this string is handed to dangerouslySetInnerHTML,
+  // and draft.html has been round-tripped through the API and the DB since it
+  // was last in a trusted DOM.
+  const initialHtml = useRef(sanitizeHtml(draft.html ?? textToHtml(draft.text)));
 
   function syncFromEditor() {
     const el = editor.current;
     if (!el) return;
-    onChange({ ...draft, html: el.innerHTML, text: htmlToText(el) });
+    // Store the sanitized serialization, not raw innerHTML: a paste of rich
+    // content can drop arbitrary markup into a contenteditable. The live DOM is
+    // left alone so the caret doesn't move.
+    onChange({ ...draft, html: sanitizeElement(el), text: htmlToText(el) });
   }
 
   // execCommand is deprecated but remains the only zero-dependency way to get
@@ -449,7 +455,13 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       setLinkOpen(false);
       return;
     }
-    const href = /^[a-z][a-z0-9+.-]*:/i.test(url) ? url : `https://${url}`;
+    // A bare domain gets https://; a javascript:/data: URL is refused outright
+    // (an allowlisted <a> with a script URL is still script execution).
+    const href = safeHref(url);
+    if (!href) {
+      setLinkOpen(false);
+      return;
+    }
     const el = editor.current;
     const range = savedRange.current;
     if (el && range) {
