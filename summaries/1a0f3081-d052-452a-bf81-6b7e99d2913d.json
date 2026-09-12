@@ -1,0 +1,15 @@
+{
+  "session_id": "1a0f3081-d052-452a-bf81-6b7e99d2913d",
+  "project": "k3s-cluster",
+  "title": "Security review of Grafana dashboard reorganization",
+  "summary": "Reviewed Grafana dashboard JSON refactoring from templated generic dashboard to organization-specific hardcoded files. Analysis confirmed no security vulnerabilities: files contain pure dashboard configuration (no executable code), datasource UIDs are not secrets, template variables are safely URL-encoded by the plugin, and SQL annotation fields are inert placeholders. The change reduces attack surface by removing a user-input textbox variable previously appended to GitHub queries.",
+  "highlights": [
+    "Datasource UIDs (afnna11mszsowf, afnnbejskioe8a) are Grafana identifiers documented in README\u2014not secrets",
+    "Template variables ($repository, $branch, $milestone) are safely URL-encoded by grafana-github-datasource plugin; no SQL/shell/eval sinks",
+    "SQL annotation fields (SELECT extract...) are inert placeholders from Grafana UI; GitHub datasource does not evaluate them",
+    "Removal of $extra textbox variable reduces injection surface by eliminating user input previously appended to GitHub search queries",
+    "No auth/RBAC changes, credentials, HTML sinks, CI trust changes, or parsing differentials introduced"
+  ],
+  "outcome": "shipped",
+  "occurred_at": "2026-09-12T10:29:05.981Z"
+}

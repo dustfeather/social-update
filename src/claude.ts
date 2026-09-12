@@ -125,7 +125,73 @@ function runAgent(prompt: string): Promise<void> {
   });
 }
 
+// Two collectors in the same WORK_DIR destroy each other: buildManifest() wipes
+// summaries/ before it writes, so a run starting at 18:00 deletes the completed
+// summaries of a run that started at 17:29, and both then fan out writing over
+// one manifest and one state file. It happens on its own — the systemd timer
+// fires on a schedule and a manual backfill is exactly the kind of long run it
+// lands in the middle of. The DB's enqueueRun() single-flight does not help:
+// that guards POST /api/collect, and both the timer and a manual run invoke
+// `node dist/collect.js` directly, which never touches it.
+//
+// "wx" is the whole mechanism — create-exclusive is atomic, so the loser of a
+// race gets EEXIST rather than a torn read of somebody's pid.
+const LOCK_PATH = path.join(WORK_DIR, "collect.lock");
+
+export function acquireLock(): boolean {
+  fs.mkdirSync(WORK_DIR, { recursive: true });
+  try {
+    fs.writeFileSync(LOCK_PATH, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), {
+      flag: "wx",
+    });
+    return true;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+
+  // A lock is present. A killed run leaves one behind, so a stale lock must not
+  // wedge collection forever: if nothing is alive on that pid, take it over.
+  let holder: { pid?: number; started?: string } = {};
+  try {
+    holder = JSON.parse(fs.readFileSync(LOCK_PATH, "utf8"));
+  } catch {
+    // Unreadable lock — treat as stale rather than blocking on garbage.
+  }
+  const alive = (() => {
+    if (!holder.pid) return false;
+    try {
+      process.kill(holder.pid, 0); // signal 0 tests existence, sends nothing
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+
+  if (alive) {
+    console.log(
+      `[collect] claude: another collection is running (pid ${holder.pid}, started ${holder.started}) — skipping`
+    );
+    return false;
+  }
+
+  console.warn(`[collect] claude: clearing a stale lock from pid ${holder.pid ?? "?"}`);
+  fs.rmSync(LOCK_PATH, { force: true });
+  fs.writeFileSync(LOCK_PATH, JSON.stringify({ pid: process.pid, started: new Date().toISOString() }), {
+    flag: "wx",
+  });
+  return true;
+}
+
 export async function collectClaude(): Promise<number> {
+  if (!acquireLock()) return 0;
+  try {
+    return await collectClaudeLocked();
+  } finally {
+    fs.rmSync(LOCK_PATH, { force: true });
+  }
+}
+
+async function collectClaudeLocked(): Promise<number> {
   const manifest = buildManifest();
   const count = manifest.sessions.length;
   if (count === 0) {
