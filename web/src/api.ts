@@ -8,11 +8,14 @@ export interface WeekRow {
 export interface Item {
   id: number;
   source: string;
+  /** Stable id within the source — for claude rows, the session's UUID. */
+  external_id: string | null;
   title: string | null;
   body: string | null;
   url: string | null;
   occurred_at: string | null;
   iso_week: string | null;
+  collected_at: string | null;
   ignored: number;
   /** JSON array of strings, assigned by the collection run's tagging pass. NULL until tagged. */
   tags: string | null;

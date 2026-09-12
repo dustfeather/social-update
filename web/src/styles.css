@@ -98,19 +98,7 @@ button:disabled {
 
 /* Ignored items stay visible but dimmed + struck, signalling they won't reach drafts. */
 .item-ignored .item-title,
-.item-ignored /* Run-assigned tags, inline after the title. Quieter than the source badge —
-   there can be six of them and they must not out-shout the title itself. */
-.item-tag {
-  margin-left: 6px;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: #232833;
-  color: var(--muted);
-  font-size: 11px;
-  white-space: nowrap;
-}
-
-.item-date {
+.item-ignored .item-date {
   opacity: 0.45;
   text-decoration: line-through;
 }
@@ -167,6 +155,63 @@ button:disabled {
 .item-date {
   color: var(--muted);
   font-size: 12px;
+}
+
+/* The title is a button, not a link — it opens the record in place rather than
+   navigating. Stripped back to text so the row still reads as a list, not a form. */
+.item-open {
+  all: unset;
+  cursor: pointer;
+  color: var(--accent);
+}
+.item-open:hover,
+.item-open[aria-expanded="true"] {
+  text-decoration: underline;
+}
+.item-open:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* The expanded record. The row is a 4-column grid, so the panel has to span all
+   of it or it lands in the title column and wraps to a thread. */
+.item-detail {
+  grid-column: 1 / -1;
+  margin: 6px 0 4px;
+  padding: 10px 12px;
+  border-left: 2px solid var(--accent);
+  background: #1b1f27;
+  border-radius: 0 6px 6px 0;
+}
+
+/* Summaries are plain text: a paragraph, then highlight bullets on their own
+   lines. pre-wrap keeps those breaks without turning the body into markup. */
+.item-body {
+  margin: 0;
+  white-space: pre-wrap;
+  line-height: 1.5;
+}
+.item-body-empty {
+  color: var(--muted);
+  font-style: italic;
+}
+
+.item-meta {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 12px;
+  margin: 12px 0 0;
+  font-size: 12px;
+}
+.item-meta dt {
+  color: var(--muted);
+}
+.item-meta dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.item-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .pager {

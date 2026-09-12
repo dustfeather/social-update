@@ -30,12 +30,63 @@ function parseTags(raw: string | null): string[] {
   }
 }
 
+// The expanded record behind one activity row. Everything shown here already
+// arrived with the list, so this is pure presentation — no fetch, no loading state.
+// The body is plain text written by the summarizer (a paragraph, then highlight
+// bullets), so it renders pre-wrapped rather than as markup.
+function ItemDetail({ item }: { item: Item }) {
+  return (
+    <div className="item-detail">
+      {item.body ? (
+        <p className="item-body">{item.body}</p>
+      ) : (
+        <p className="item-body item-body-empty">No summary stored for this item.</p>
+      )}
+      <dl className="item-meta">
+        <dt>Source</dt>
+        <dd>{item.source}</dd>
+        {item.external_id && (
+          <>
+            <dt>Session</dt>
+            <dd className="item-id">{item.external_id}</dd>
+          </>
+        )}
+        {item.occurred_at && (
+          <>
+            <dt>Occurred</dt>
+            <dd>{item.occurred_at.replace("T", " ").slice(0, 16)}</dd>
+          </>
+        )}
+        {item.collected_at && (
+          <>
+            <dt>Collected</dt>
+            <dd>{item.collected_at.replace("T", " ").slice(0, 16)}</dd>
+          </>
+        )}
+        {item.url && (
+          <>
+            <dt>Link</dt>
+            <dd>
+              <a href={item.url} target="_blank" rel="noreferrer">
+                {item.url}
+              </a>
+            </dd>
+          </>
+        )}
+      </dl>
+    </div>
+  );
+}
+
 export default function App() {
   const [weeks, setWeeks] = useState<WeekRow[]>([]);
   const [week, setWeek] = useState<string>("");
   const [items, setItems] = useState<Item[]>([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  // Which item's full summary is expanded. The list already carries every field
+  // /api/items returns, so opening one costs no extra request.
+  const [openId, setOpenId] = useState<number | null>(null);
   const [manualText, setManualText] = useState("");
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [draftId, setDraftId] = useState<number | null>(null); // row the edits save back onto
@@ -60,6 +111,7 @@ export default function App() {
       .then((p) => {
         setItems(p.items);
         setTotal(p.total);
+        setOpenId(null); // the open row is gone once the list underneath changes
       })
       .catch((e) => setError(e.message));
   }, [week, page]);
@@ -155,13 +207,14 @@ export default function App() {
             <li key={it.id} className={it.ignored ? "item-ignored" : undefined}>
               <span className={`tag tag-${it.source}`}>{it.source}</span>
               <span className="item-title">
-                {it.url ? (
-                  <a href={it.url} target="_blank" rel="noreferrer">
-                    {it.title}
-                  </a>
-                ) : (
-                  it.title
-                )}
+                <button
+                  className="item-open"
+                  aria-expanded={openId === it.id}
+                  onClick={() => setOpenId((cur) => (cur === it.id ? null : it.id))}
+                  title="Show the full summary"
+                >
+                  {it.title}
+                </button>
                 {parseTags(it.tags).map((t) => (
                   <span key={t} className="item-tag">
                     {t}
@@ -176,6 +229,7 @@ export default function App() {
               >
                 {it.ignored ? "Restore" : "Ignore"}
               </button>
+              {openId === it.id && <ItemDetail item={it} />}
             </li>
           ))}
         </ul>
