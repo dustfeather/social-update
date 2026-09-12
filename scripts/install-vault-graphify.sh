@@ -26,7 +26,7 @@ echo "graphify: $(graphify --version 2>/dev/null || echo present)"
 
 # 1b. MCP-off patch (idempotent) ------------------------------------------
 # graphify's claude-cli backend shells `claude -p`, which otherwise boots the
-# user's FULL MCP stack (serena/context-mode/headroom/code-review-graph) on
+# user's FULL MCP stack (serena/context-mode/headroom/drawio) on
 # EVERY chunk — ~80s/call and it stalls under repeated invocation. Extraction
 # needs no MCP, so we inject --strict-mcp-config. Cuts a call ~80s -> ~3s.
 # Re-apply after every `pipx upgrade graphifyy` (the venv file is overwritten).
