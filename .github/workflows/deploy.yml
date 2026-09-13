@@ -8,6 +8,9 @@ on:
       - "deploy/**"
       - "Dockerfile"
       - "prompt.txt"
+      # The second, humanizing pass reads its own prompt file; editing only that one
+      # still changes what the Generate endpoint produces.
+      - "humanize-prompt.txt"
       # tsconfig.json is an input to the image build (the Dockerfile copies it
       # and runs `npm run build`), so a change to it alone must redeploy. Bumps
       # usually touch package.json too, which hid this: a compiler-options-only

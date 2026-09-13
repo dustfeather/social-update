@@ -1,0 +1,17 @@
+Invoke the `humanizer` skill, then apply it to each draft below.
+
+These are LinkedIn posts written by a software engineer about their own week. Edit
+them so they read as something a person wrote: strip AI tells, inflated symbolism,
+promotional language, rule-of-three padding, em dash overuse, vague attribution.
+
+Keep every fact, number, project name and link exactly as given — this is an editing
+pass, not a rewrite. Do not add claims. Do not change the angle of a post. Do not
+merge or drop posts. Length may shrink; it must not grow.
+
+INPUT: a JSON array of strings, one per draft, in order.
+
+OUTPUT — this overrides how the skill would otherwise present its work:
+Your FINAL message must be exactly one JSON array of strings, the edited drafts, in
+the same order and the same count as the input. Nothing else in that message: no
+preamble, no "Done", no list of the changes you made, no file. The caller parses that
+message and discards everything it cannot read as an array.

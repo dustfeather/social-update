@@ -4,6 +4,7 @@ import path from "path";
 import { getWeekItems, saveDraft } from "./db";
 
 const PROMPT_PATH = path.join(__dirname, "..", "prompt.txt");
+const HUMANIZE_PROMPT_PATH = path.join(__dirname, "..", "humanize-prompt.txt");
 const ITEM_BODY_CAP = 500; // keep each item compact so the prompt stays bounded
 
 export interface Draft {
@@ -12,9 +13,9 @@ export interface Draft {
 }
 
 // Pipe the assembled prompt to the local claude CLI and return the raw .result string.
-function runClaude(input: string): Promise<string> {
+function runClaude(input: string, extraArgs: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json"], {
+    const child = spawn("claude", ["-p", "--output-format", "json", ...extraArgs], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";
@@ -78,6 +79,54 @@ function buildInput(promptText: string, items: ReturnType<typeof getWeekItems>, 
   return lines.join("\n");
 }
 
+// A second pass over the drafts, run through the `humanizer` skill. It is a separate
+// call rather than another paragraph in prompt.txt for two reasons: the skill is an
+// EDITING pass over finished prose, which is the shape it was written for, and asking
+// one call to both invent the posts and police its own voice reliably costs the JSON
+// contract — the skill's own persona starts answering instead of the format.
+//
+// Nothing here may fail a generation. A polish pass that throws, times out, returns a
+// different number of drafts or returns junk leaves the originals standing: an unpolished
+// draft is worth having, a lost one is not.
+export function mergeHumanized(drafts: Draft[], result: string): Draft[] {
+  let edited: unknown;
+  try {
+    let t = result.trim();
+    const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (fence) t = fence[1].trim();
+    edited = JSON.parse(t);
+  } catch {
+    return drafts;
+  }
+  if (!Array.isArray(edited) || edited.length !== drafts.length) return drafts;
+  return drafts.map((d, i) => {
+    const text = edited[i];
+    // An empty or non-string edit is a dropped draft, which is the one outcome worse
+    // than an unedited one.
+    return typeof text === "string" && text.trim() ? { ...d, text: text.trim() } : d;
+  });
+}
+
+async function humanize(drafts: Draft[]): Promise<Draft[]> {
+  if (process.env.HUMANIZE === "0" || !drafts.length) return drafts;
+  let prompt: string;
+  try {
+    prompt = fs.readFileSync(HUMANIZE_PROMPT_PATH, "utf8");
+  } catch {
+    return drafts;
+  }
+  try {
+    const input = `${prompt.trim()}\n\n${JSON.stringify(drafts.map((d) => d.text), null, 2)}`;
+    // The editing tools are taken away for this call. Left with them, the skill does
+    // what an editor naturally does — writes the edited copy somewhere and reports
+    // "Done" — and the JSON array the caller needs never arrives.
+    return mergeHumanized(drafts, await runClaude(input, ["--disallowedTools", "Write,Edit,NotebookEdit"]));
+  } catch (e) {
+    console.warn(`[generate] humanizer pass skipped — ${(e as Error).message}`);
+    return drafts;
+  }
+}
+
 export async function generateDrafts(
   week: string,
   manualText: string
@@ -89,7 +138,7 @@ export async function generateDrafts(
   }
   const input = buildInput(promptText, items, manualText);
   const result = await runClaude(input);
-  const drafts = parseDrafts(result);
+  const drafts = await humanize(parseDrafts(result));
 
   const draftId = saveDraft({
     iso_week: week,

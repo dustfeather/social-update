@@ -44,6 +44,7 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/web/dist ./web/dist
 COPY prompt.txt ./prompt.txt
+COPY humanize-prompt.txt ./humanize-prompt.txt
 
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 
@@ -52,6 +53,18 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN useradd --uid 10001 --user-group --create-home --home-dir /home/agent agent \
   && mkdir -p /data \
   && chown -R 10001:10001 /data /home/agent
+
+# The Generate endpoint's second pass invokes the `humanizer` skill, and a skill has to
+# exist on the box that runs the CLI — it lives in ~/.claude/skills on the workstation
+# and nowhere in this image. Fetched from upstream rather than vendored: the skill is
+# someone else's work (github.com/blader/humanizer) with no license file, which is not
+# ours to copy into this repo. Pinned to a commit so a rewrite upstream cannot silently
+# change the voice of every draft; bump it deliberately.
+# If this file is missing the pass degrades to a no-op and the raw drafts stand.
+ARG HUMANIZER_SHA=c78047bd4300e5a995d37ae8c7684aa2d53326cd
+ADD https://raw.githubusercontent.com/blader/humanizer/${HUMANIZER_SHA}/SKILL.md \
+    /home/agent/.claude/skills/humanizer/SKILL.md
+RUN chown -R 10001:10001 /home/agent/.claude
 # node:sqlite is stable as of Node 26, so there is no experimental warning left to
 # silence. The NODE_OPTIONS suppression that used to live here is deliberately
 # gone rather than kept "just in case": it muted EVERY ExperimentalWarning, so
