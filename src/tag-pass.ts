@@ -36,7 +36,9 @@ export interface TagCandidate {
   session_id: string;
   project: string;
   title: string;
-  outcome: string;
+  /** Absent for a backfill candidate: outcome lives in raw_json, which the item
+   *  API does not return. A tag rarely turns on it. */
+  outcome?: string;
   highlights: string[];
 }
 
@@ -107,7 +109,8 @@ export function rankVocabulary(tags: Record<string, string[]>, limit: number = V
 export function renderCandidates(items: TagCandidate[]): string {
   return items
     .map((it) => {
-      const head = `[${it.session_id}] ${it.project} — ${it.title} (${it.outcome})`;
+      const head =
+        `[${it.session_id}] ${it.project} — ${it.title}` + (it.outcome ? ` (${it.outcome})` : "");
       const rest = it.highlights
         .slice(0, HIGHLIGHTS_SHOWN)
         .map((h) => `\n    - ${h}`)

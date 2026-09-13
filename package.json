@@ -17,6 +17,7 @@
     "collect:sessions": "node dist/claude-sessions.js",
     "collect:import": "node dist/claude-import.js",
     "collect:tag": "node dist/claude-tag.js",
+    "collect:tag:backfill": "node dist/tag-backfill.js",
     "summary:validate": "node dist/summary-validate.js",
     "prestart": "npm run build",
     "start": "node dist/server.js",

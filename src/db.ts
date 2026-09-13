@@ -154,6 +154,25 @@ export function getWeekItems(week: string): Array<{
   return weekItemsStmt.all(week) as any;
 }
 
+// Every item of one source that has never been tagged. NULL means "not tagged
+// yet"; "[]" is a tag set that was deliberately left empty and is not reopened
+// here. Used by the backfill — the in-run pass works from the summaries it just
+// produced and never needs to ask the DB.
+const untaggedStmt = db.prepare(
+  `SELECT external_id, title, body, tags
+     FROM items
+    WHERE source = ? AND tags IS NULL
+    ORDER BY occurred_at DESC`
+);
+export function getUntaggedItems(source: string): Array<{
+  external_id: string | null;
+  title: string | null;
+  body: string | null;
+  tags: string | null;
+}> {
+  return untaggedStmt.all(source) as any;
+}
+
 // Toggle a single item's ignored flag. Returns true if a row was updated.
 const setIgnoredStmt = db.prepare(`UPDATE items SET ignored = @ignored WHERE id = @id`);
 export function setItemIgnored(id: number, ignored: boolean): boolean {

@@ -235,6 +235,23 @@ npm run collect:import     # validate every summary + batch insert
 npm run collect:tag        # re-apply ~/.cache/social-update/claude/tags.json
 ```
 
+Tagging rows that are already in the DB — anything collected before the in-run pass
+existed, or left behind by a chunk that failed:
+
+```bash
+npm run collect:tag:backfill -- --dry-run --limit 25   # look before you write
+npm run collect:tag:backfill                           # tag every untagged item
+```
+
+It walks the DB rather than the summaries (those are deleted as they import) and
+rebuilds each candidate from the columns `claude-import.ts` wrote — `title` is
+"<project>: <title>", `body` is the summary plus "- " highlight lines. `outcome` does
+not survive that trip; it lives in `raw_json`, which `/api/items` does not return, and
+a tag rarely turns on it. One chunked pass over the whole backlog, so the vocabulary is
+shared across it exactly as in a run — tagging it in eight invocations would produce
+eight vocabularies. `--dry-run` writes `<work dir>/tags-backfill.json` and applies
+nothing.
+
 The run tags on its own — `collect:tag` is the replay path. The pass writes the tags it
 chose to `<work dir>/tags.json` before POSTing them, so a tag apply that failed (cluster
 down, WARP off) is retried by running that one command, and a tag set you disagree with is
