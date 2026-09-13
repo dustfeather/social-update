@@ -183,7 +183,17 @@ nohup scripts/social-collect-watchdog.sh > /tmp/collect-$(date +%F).log 2>&1 &
 tail -f /tmp/collect-$(date +%F).log
 ```
 
-Ctrl-C on the `tail` detaches from the log, not from the run.
+On a terminal it prints a live bar with an ETA built from the run's own measured
+pace, per-session lines scrolling above it:
+
+```
+[collect] claude: [ 41/128] 7c536e1a social-update ok in 88.3s (1 attempt)
+[ 41/128] ████████████░░░░░░░░░░░░░░░░░░░░  32%  ETA 2h09m  avg 1m29s
+```
+
+Redirect or pipe that output and the bar disappears on its own — same for systemd,
+where a repaint would be one journal entry per frame rather than one line rewritten.
+`NO_PROGRESS=1` turns it off explicitly.
 
 Size it from the scan rather than from a remembered figure — the two filters that
 decide it (`CLAUDE_LOOKBACK_DAYS` and the `sdk-*` exclusion) both move the count a

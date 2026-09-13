@@ -46,14 +46,21 @@ fi
 #    compiles first, so a src/ change that was never built by hand cannot leave
 #    this unit silently running the previous build. dist/ is gitignored, so there
 #    is no committed artifact to fall back on.
-out="$(npm run --silent collect 2>&1)"; rc=$?
-echo "$out"
-if [ "$rc" -ne 0 ]; then echo "ERROR: collector exited $rc"; exit "$rc"; fi
+#    Output is NOT captured or piped. It used to be `out="$(npm run ... 2>&1)"` so the
+#    next step could grep it, which meant a three-hour run printed nothing until it
+#    ended — and, because a captured command has no TTY, the progress bar could not
+#    render either. Inheriting our stdout is what makes both work; under systemd that
+#    stdout is the journal, where the bar is inert by design (see progress-bar.ts).
+npm run --silent collect
+rc=$?
 
-# 3. a source can fail without failing the whole run (collect.ts catches per-source).
-#    Treat that as an alertable condition so it shows up in journalctl.
-if grep -q "FAILED" <<<"$out"; then
+# 3. a source can fail without failing the whole run (collect.ts catches per-source),
+#    and that must still page. It reports this as exit 2 rather than a line of prose:
+#    grepping our own output for "FAILED" made a log message load-bearing, so
+#    rewording it would have disabled the alert silently.
+if [ "$rc" -eq 2 ]; then
   echo "ERROR: a collector source reported FAILED (see lines above)"; exit 1
 fi
+if [ "$rc" -ne 0 ]; then echo "ERROR: collector exited $rc"; exit "$rc"; fi
 
 echo "OK: collection run clean"

@@ -37,19 +37,30 @@ id="$(printf '%s' "$claim" | grep -oE '"id":[0-9]+' | head -1 | grep -oE '[0-9]+
 [ -z "$id" ] && exit 0
 echo "claimed run $id — running collector"
 
-# The watchdog does the Chrome/CDP setup, ingest health-check, and per-source run.
-out="$("$HOME/.local/bin/social-collect-watchdog.sh" 2>&1)"; rc=$?
-echo "$out"
+# The watchdog does the ingest health-check, the router probe and the run itself.
+# Output is streamed to a file rather than held in a variable: a multi-hour run
+# accumulates megabytes that only exist in this shell's memory until it exits, so a
+# power cut takes the whole log with it. (The RUN survives either way — the durable
+# state is progress.json and the summaries on disk — but the log is what tells you
+# how far it got, and that is exactly what you want after an unclean stop.)
+log="$HOME/.cache/social-update/claude/last-run.log"
+mkdir -p "$(dirname "$log")"
+"$HOME/.local/bin/social-collect-watchdog.sh" > "$log" 2>&1; rc=$?
+cat "$log"
 
-# collect.ts prints "[collect] done — N new items total"; pull N back out.
-inserted="$(printf '%s' "$out" | grep -oE '[0-9]+ new items? total' | grep -oE '^[0-9]+' | tail -1)"
+# How many items landed comes from the collector's own result file, not from its
+# prose. The previous grep looked for "N new items total", a phrasing collect.ts does
+# not print (it says "N items written"), so `inserted` was 0 on every successful run
+# and the UI recorded every collection as having found nothing.
+run_json="$HOME/.cache/social-update/claude/last-run.json"
+inserted="$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).inserted??0))}catch{process.stdout.write("0")}' "$run_json" 2>/dev/null)"
 inserted="${inserted:-0}"
 
 if [ "$rc" -eq 0 ]; then
   body="$(printf '{"inserted":%s}' "$inserted")"
 else
   # Keep the reported error short and JSON-safe (strip quotes/backslashes/newlines).
-  msg="$(printf '%s' "$out" | tail -3 | tr '\n' ' ' | tr -d '"\\' | cut -c1-200)"
+  msg="$(tail -3 "$log" | tr '\n' ' ' | tr -d '"\\' | cut -c1-200)"
   body="$(printf '{"error":"run failed (rc=%s): %s"}' "$rc" "$msg")"
 fi
 

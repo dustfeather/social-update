@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { config } from "dotenv";
 import { buildManifest, WORK_DIR } from "./claude-sessions";
+import { createProgress } from "./progress-bar";
 import { importSummaries } from "./claude-import";
 import { readProgress, writeProgress } from "./claude-progress";
 import { summarizeSession } from "./summarize";
@@ -175,6 +176,10 @@ async function collectClaudeLocked(): Promise<number> {
     `[collect] claude: ${count} session(s) pending, ${todo.length} to summarize via ${LLM_MODEL} @ ${LLM_BASE}`
   );
 
+  // On a terminal this repaints one line; under systemd it is inert and the plain
+  // per-session lines below are all that is written. See progress-bar.ts.
+  const bar = createProgress(todo.length);
+
   // Everything summarized but not yet committed. Seeded with the resumed files so a
   // restart imports them even if the model is never needed again.
   let batch: string[] = [...resumed];
@@ -207,6 +212,7 @@ async function collectClaudeLocked(): Promise<number> {
   const release = async () => { await unloadModel(loadedByUs); loadedByUs = false; };
   const onSignal = (sig: string) => {
     void (async () => {
+      bar.finish();
       console.log(`\n[collect] claude: ${sig} — releasing the model and committing what is done`);
       await release();
       try { await flush(sig); } catch (e) { console.error(`[collect] claude: final commit failed: ${e}`); }
@@ -234,7 +240,7 @@ async function collectClaudeLocked(): Promise<number> {
 
     for (const [i, session] of todo.entries()) {
       if (Date.now() > deadline) {
-        console.warn(
+        bar.error(
           `[collect] claude: ${BUDGET_MS / 60_000} min budget spent after ${i} session(s) — ` +
           `the remaining ${todo.length - i} stay pending for the next run`
         );
@@ -242,14 +248,16 @@ async function collectClaudeLocked(): Promise<number> {
       }
 
       const label = `[${String(i + 1).padStart(3)}/${todo.length}] ${session.session_id.slice(0, 8)} ${session.project}`;
+      const startedAt = Date.now();
       const result = await summarizeSession(session);
 
       if (!result.ok) {
         failed++;
-        console.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
+        bar.advance(Date.now() - startedAt, true);
+        bar.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
         if (result.transport) {
           if (++consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
-            console.error(
+            bar.error(
               `[collect] claude: ${consecutiveTransportFailures} consecutive transport failures — ` +
               `the model server looks unwell, stopping. The remaining ` +
               `${todo.length - i - 1} session(s) stay pending.`
@@ -277,7 +285,8 @@ async function collectClaudeLocked(): Promise<number> {
 
       ok++;
       batch.push(session.session_id);
-      console.log(
+      bar.advance(Date.now() - startedAt);
+      bar.line(
         `[collect] claude: ${label} ok in ${(result.ms / 1000).toFixed(1)}s ` +
         `(${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`
       );
@@ -285,6 +294,9 @@ async function collectClaudeLocked(): Promise<number> {
       if (batch.length >= IMPORT_BATCH) await flush("batch");
     }
   } finally {
+    // Before any other output: the bar owns the current terminal line, and a log
+    // line written over it leaves half a bar stranded in the scrollback.
+    bar.finish();
     // Release before the final commit: importing does not need the GPU, and a model
     // this run loaded holds ~7.9 GiB that nothing else on the box can use meanwhile.
     // One found already resident is left alone — it is not ours to evict.
