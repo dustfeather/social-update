@@ -35,6 +35,11 @@ function toItem(s: SessionSummary): ItemInput {
 
 export interface ImportReport {
   imported: number;
+  /** WHICH sessions landed, not just how many. The tagging pass writes tags by
+   *  external_id, so it has to know exactly which rows exist — tagging a session
+   *  whose summary was rejected here is a POST that updates nothing and then looks
+   *  like the tag file naming a session that was never imported. */
+  imported_ids: string[];
   written: number;
   invalid: Array<{ file: string; errors: string[] }>;
   missing: string[];
@@ -91,7 +96,7 @@ export async function importSummaries(only?: string[]): Promise<ImportReport> {
   }
   writeState(state);
 
-  return { imported: imported.length, written, invalid, missing };
+  return { imported: imported.length, imported_ids: imported, written, invalid, missing };
 }
 
 if (require.main === module) {

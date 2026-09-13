@@ -44,7 +44,15 @@ export interface ChatReply {
   outputTokens: number;
 }
 
-export async function chat(messages: ChatMessage[]): Promise<ChatReply> {
+/** `maxTokens` overrides the default completion budget for one call. The tagging
+ *  pass needs a different one than a summary — a short array per session across a
+ *  whole chunk — and sizing both from one env var means raising it for the pass
+ *  also pays for a reasoning block on every session of the loop. */
+export async function chat(
+  messages: ChatMessage[],
+  opts: { maxTokens?: number } = {}
+): Promise<ChatReply> {
+  const maxTokens = opts.maxTokens ?? MAX_TOKENS;
   const t0 = Date.now();
   const res = await fetch(`${LLM_BASE}/chat/completions`, {
     method: "POST",
@@ -53,7 +61,7 @@ export async function chat(messages: ChatMessage[]): Promise<ChatReply> {
       model: LLM_MODEL,
       messages,
       temperature: TEMP,
-      max_tokens: MAX_TOKENS,
+      max_tokens: maxTokens,
       stream: false,
       chat_template_kwargs: { enable_thinking: THINK },
     }),
@@ -73,7 +81,7 @@ export async function chat(messages: ChatMessage[]): Promise<ChatReply> {
   if (!text.trim() && choice.finish_reason === "length") {
     throw new Error(
       `empty content with finish_reason=length — the reasoning block consumed all ` +
-      `${MAX_TOKENS} completion tokens (${body.usage?.completion_tokens ?? "?"} used). ` +
+      `${maxTokens} completion tokens (${body.usage?.completion_tokens ?? "?"} used). ` +
       `Raise LLM_MAX_TOKENS, or unset LLM_THINK.`
     );
   }

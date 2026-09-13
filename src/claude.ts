@@ -7,6 +7,9 @@ import { writeFileDurable, replaceFileDurable } from "./durable";
 import { importSummaries } from "./claude-import";
 import { readProgress, recordProgress, forgetProgress, compactProgress } from "./claude-progress";
 import { summarizeSession } from "./summarize";
+import type { SessionSummary } from "./summary";
+import { assignTags, type TagCandidate, type TagPassResult } from "./tag-pass";
+import { applyTags } from "./sink";
 import { loadModel, unloadModel, LLM_MODEL, LLM_BASE } from "./llm";
 
 config({ quiet: true });
@@ -17,7 +20,13 @@ config({ quiet: true });
 // it spent Claude on the most mechanical half of the pipeline: reading a transcript
 // and filling a six-field schema. A local model does that at 100% valid@1 over a
 // stratified sample, so Claude is now spent only where judgement is actually
-// required — drafting posts, and tagging across the batch once items are in the DB.
+// required — drafting posts.
+//
+// Tagging is part of the run again (see tag-pass.ts). It is still one pass over the
+// whole batch rather than a per-session call — that was always the constraint, and
+// it is about the shape of the pass, not about which model runs it. What it buys:
+// nothing leaves the run untagged waiting for a human to remember, which is what
+// "items are untagged — run collect:tag" turned into in practice.
 //
 // What the loop gets in exchange for being dumber: it is deterministic, it has no
 // tool surface for a transcript to inject into, and the prompt is one file instead
@@ -116,6 +125,12 @@ const IMPORT_BATCH = Number(process.env.CLAUDE_IMPORT_BATCH ?? 10);
 // session pending, which is the outcome that costs nothing.
 const MAX_CONSECUTIVE_TRANSPORT_FAILURES = Number(process.env.CLAUDE_MAX_TRANSPORT_FAILURES ?? 5);
 
+// Tagging in-run, off with CLAUDE_TAG=0. The escape hatch exists because the pass
+// is the one part of a collection that spends the model on something other than
+// getting the work into the DB: a backfill that only needs the rows can skip it and
+// tag later with `npm run collect:tag`, which is unchanged.
+const TAG_IN_RUN = process.env.CLAUDE_TAG !== "0";
+
 async function collectClaudeLocked(): Promise<number> {
   const manifest = buildManifest();
   const count = manifest.sessions.length;
@@ -188,6 +203,31 @@ async function collectClaudeLocked(): Promise<number> {
   // restart imports them even if the model is never needed again.
   let batch: string[] = [...resumed];
   let imported = 0;
+  // Which sessions actually reached the DB, and what the tagging pass will read.
+  //
+  // The candidates are collected as summaries are produced, not at flush time,
+  // because flush DELETES each file the moment it is imported — by the end of the
+  // run there is nothing left on disk to tag from. Resumed summaries are read here
+  // for the same reason: they are already written and will be gone just as fast.
+  const landed: string[] = [];
+  const candidates: TagCandidate[] = [];
+  const remember = (s: SessionSummary) =>
+    candidates.push({
+      session_id: s.session_id,
+      project: s.project,
+      title: s.title,
+      outcome: s.outcome,
+      highlights: s.highlights,
+    });
+  for (const id of resumed) {
+    try {
+      remember(JSON.parse(fs.readFileSync(summaryFile(id), "utf8")) as SessionSummary);
+    } catch {
+      // Unreadable or malformed — the importer rejects it too, so it will never be
+      // in `landed` and nothing would be tagged with it anyway.
+    }
+  }
+
   const flush = async (why: string) => {
     if (!batch.length) return;
     const report = await importSummaries(batch);
@@ -205,12 +245,14 @@ async function collectClaudeLocked(): Promise<number> {
       forgetProgress(id);
     }
     imported += report.written;
+    landed.push(...report.imported_ids);
     console.log(`[collect] claude: committed ${report.written} item(s) (${why})`);
     batch = [];
   };
 
   let ok = 0;
   let failed = 0;
+  let tagged: TagPassResult | undefined;
   let consecutiveTransportFailures = 0;
   let loadedByUs = false;
   const release = async () => { await unloadModel(loadedByUs); loadedByUs = false; };
@@ -228,7 +270,9 @@ async function collectClaudeLocked(): Promise<number> {
 
   const deadline = Date.now() + BUDGET_MS;
   try {
-    if (todo.length) {
+    // `batch` is the resumed summaries at this point: a run with nothing left to
+    // summarize still needs the model if it is going to tag them.
+    if (todo.length || (TAG_IN_RUN && batch.length)) {
       // Load up front rather than letting the first session trigger it. A cold load
       // is seconds to tens of seconds; charged to session one it looks like a
       // pathologically slow session and sends you reading that transcript for a
@@ -289,6 +333,7 @@ async function collectClaudeLocked(): Promise<number> {
       };
       progress[session.session_id] = entry;
       recordProgress(session.session_id, entry);
+      remember(result.summary!);
 
       ok++;
       batch.push(session.session_id);
@@ -299,6 +344,17 @@ async function collectClaudeLocked(): Promise<number> {
       );
 
       if (batch.length >= IMPORT_BATCH) await flush("batch");
+    }
+
+    // Tag while the model is still resident. The pass is the last thing in the run
+    // that needs it, and releasing first would mean paying a cold load again for a
+    // handful of requests.
+    //
+    // Generating tags does not need the rows to exist — only APPLYING them does —
+    // which is what lets this sit before the final commit and the POST after it.
+    if (TAG_IN_RUN && candidates.length) {
+      bar.line(`[collect] claude: tagging ${candidates.length} session(s) in one pass`);
+      tagged = await assignTags(candidates, (line) => bar.line(line));
     }
   } finally {
     // Before any other output: the bar owns the current terminal line, and a log
@@ -314,9 +370,49 @@ async function collectClaudeLocked(): Promise<number> {
 
   await flush("final");
   console.log(`[collect] claude: summarized ${ok}, failed ${failed}, imported ${imported}`);
-  // Tagging used to run inside the agent, over the whole batch at once. It is a
-  // judgement call across sessions, not a per-session transform, so it stays a
-  // Claude job: write WORK_DIR/tags.json and run `npm run collect:tag`.
-  if (imported) console.log(`[collect] claude: items are untagged — run collect:tag to tag them`);
+
+  if (tagged) {
+    // Only a row that exists can be tagged. A session whose summary was rejected at
+    // import was still worth tagging speculatively — it cost one line of a prompt —
+    // but POSTing it updates nothing and reads afterwards as a tag file naming a
+    // session that was never imported, which is the one thing the tag report treats
+    // as a failure.
+    const live = new Set(landed);
+    const tags = Object.fromEntries(Object.entries(tagged.tags).filter(([id]) => live.has(id)));
+    const asked = Object.keys(tags).length;
+
+    // Written whether or not the apply works: it is the replay input for
+    // `npm run collect:tag` and the only record of what this pass decided.
+    replaceFileDurable(path.join(WORK_DIR, "tags.json"), JSON.stringify(tags, null, 2));
+
+    let updated = 0;
+    let error: string | undefined;
+    try {
+      updated = await applyTags("claude", tags);
+    } catch (e) {
+      // A failed tag POST must not fail the run. The items are already in the DB;
+      // what is missing is one column, and tags.json on disk is enough to add it.
+      error = e instanceof Error ? e.message : String(e);
+    }
+    replaceFileDurable(
+      path.join(WORK_DIR, "tag-report.json"),
+      JSON.stringify({ asked, updated, untagged: tagged.failed, errors: tagged.errors, error }, null, 2)
+    );
+
+    if (error) {
+      console.error(
+        `[collect] claude: applying tags failed — ${error}. ` +
+        `${WORK_DIR}/tags.json is written; \`npm run collect:tag\` applies it`
+      );
+    } else {
+      const left = asked - updated + tagged.failed.length;
+      console.log(
+        `[collect] claude: tagged ${updated} item(s)` +
+        (left > 0 ? `, ${left} left untagged — they come back on the next run` : "")
+      );
+    }
+  } else if (imported) {
+    console.log(`[collect] claude: CLAUDE_TAG=0 — items are untagged, run collect:tag to tag them`);
+  }
   return imported;
 }

@@ -17,9 +17,9 @@ finds to the cluster over the WARP network:
  local machine                          │  k3s (social-update ns, acer-laptop)
  ─────────────                          │  ────────────────────────────────────
  collect agent ──POST /api/ingest───────┼──► Express ──► SQLite (/data PVC)
-  ├ sub-agent per session (INGEST_URL)  │       ▲              │
+  ├ local model per session (INGEST_URL)│       ▲              │
   ├ claude-import.js                    │       │   web UI ──► POST /api/generate
-  └ claude-tag.js ──POST /api/items/tags┤       │              │
+  └ tag-pass.ts ──POST /api/items/tags──┤       │              │
                                         │       │     in-pod `claude` CLI ──► drafts
  browser (WARP) ──https://social.itguys.ro──────┘                            (copy/paste)
 ```
@@ -59,7 +59,7 @@ flowchart TB
         SCAN["claude-sessions.js<br/>new/changed transcripts → manifest"]
         SUB["llama.cpp router :1921<br/>one call per session · no Claude"]
         IMP["claude-import.js<br/>validate + batch insert"]
-        TAG["claude-tag.js<br/>cross-session tag pass"]
+        TAG["tag-pass.ts<br/>cross-session tag pass<br/>(in-run, CLAUDE_TAG=0 to skip)"]
     end
 
     subgraph cluster["k3s · social.itguys.ro (acer-laptop, WARP-only)"]
@@ -117,9 +117,9 @@ flowchart TB
 > (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
 > Collection is **no longer** a Claude call: it loops over a local model on the llama.cpp
 > router (`LLM_BASE_URL`), so the box needs a GPU rather than a Claude session. The genuine
-> model calls left are the in-pod Opus drafter (`/api/generate`), the cross-session tag pass
-> (`collect:tag`, run by hand), and the vault-keeper writers (daily/weekly/repo-doc = Opus,
-> inbox = Haiku).
+> model calls left are the in-pod Opus drafter (`/api/generate`) and the vault-keeper writers
+> (daily/weekly/repo-doc = Opus, inbox = Haiku). The cross-session tag pass runs on the same
+> local model as the summaries, at the end of the same run.
 >
 > **Keeping the graph fresh:** each repo's slice of `global-graph.json` is refreshed on
 > every commit by its AST post-commit hook (`VGH`). The daily `vault-repos` job (`T5`) then
@@ -153,6 +153,9 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 | `CLAUDE_INCLUDE_SDK_SESSIONS` | Set to `1` to also summarize programmatic sessions (`entrypoint` `sdk-py`/`sdk-cli`: a plugin's agent fan-out, a script). Off by default — they journal the tooling, not the work, and on this machine they were 200 of 328 in-window transcripts. Task-tool sub-agents need no setting: they write no transcript of their own and are summarized inside their parent session. |
 | `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
 | `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model — summarizing is local. |
+| `CLAUDE_TAG` | Set to `0` to skip the in-run tagging pass. Items then land with `tags` NULL and `npm run collect:tag` applies a tag file by hand. |
+| `CLAUDE_TAG_BATCH` | Sessions per tagging request (default 25). The pass is chunked; each chunk is shown the tags the earlier ones used. |
+| `CLAUDE_TAG_MAX_TOKENS` | Completion budget for one tagging request (default 2000). Separate from `LLM_MAX_TOKENS` so raising it for the pass does not pay for a bigger budget on every session of the loop. |
 | `VAULT_PATH` | Obsidian vault root — used by the vault-keeper scripts, not by collection. `~` and `$HOME` are expanded; quote paths with spaces. |
 | `INGEST_URL` | Cluster base URL. Set → POST to `/api/ingest`; unset → write a local SQLite file. |
 | `PORT` | Web server port. |
@@ -229,8 +232,13 @@ The individual steps, for debugging a run by hand:
 npm run collect:sessions   # scan → ~/.cache/social-update/claude/manifest.json
 npm run summary:validate ~/.cache/social-update/claude/summaries
 npm run collect:import     # validate every summary + batch insert
-npm run collect:tag        # apply ~/.cache/social-update/claude/tags.json
+npm run collect:tag        # re-apply ~/.cache/social-update/claude/tags.json
 ```
+
+The run tags on its own — `collect:tag` is the replay path. The pass writes the tags it
+chose to `<work dir>/tags.json` before POSTing them, so a tag apply that failed (cluster
+down, WARP off) is retried by running that one command, and a tag set you disagree with is
+fixed by editing the file and running it again.
 
 Open the UI, pick a week, optionally add manual (work/NDA) items the collectors can't see,
 and click **Generate**. Copy any draft card.
@@ -290,14 +298,23 @@ writes a manifest, and then walks them one at a time against a **local** model:
 4. **Import in batches** — every `CLAUDE_IMPORT_BATCH` summaries (default 10) are written to
    the DB and their state entries advanced. A session whose summary is missing or invalid
    keeps its state entry and comes back on the next run; nothing is silently lost.
-5. **Tag** — *not* part of the run any more. Tagging is a judgement call **across** sessions
-   (a tag is only useful if two sessions about the same thing get the same one), so it stays
-   a Claude job: write `<work dir>/tags.json` and run `npm run collect:tag`.
+5. **Tag** — `src/tag-pass.ts`, one pass over everything the run summarized, while the model
+   is still resident. Tagging is a judgement call **across** sessions — a tag is only useful
+   if two sessions about the same thing get the same one — so it is never a per-session call.
+   A backlog does not fit in one context, so the pass is chunked (`CLAUDE_TAG_BATCH`) and each
+   chunk is shown the tags the earlier chunks actually used, ranked by frequency, and told to
+   reuse them before inventing a synonym. Replies are validated (every id in the batch, no
+   invented ids, kebab-case, 1–6 tags) and a bad one goes back with the errors, same
+   self-correction loop as the summaries. Only sessions that actually reached the DB are
+   POSTed. A chunk that never validates leaves its sessions NULL — "not tagged yet" — and they
+   come back on the next run; the pass cannot fail a collection.
 
 Why a local model instead of `claude -p` fanning out a sub-agent per session: reading a
 transcript and filling a six-field schema is the mechanical half of the pipeline. Moving it
-off Claude leaves Claude for the half that needs judgement — drafting posts and tagging — and
-buys determinism and a loop with no tool surface for a transcript to inject into.
+off Claude leaves Claude for the half that needs judgement — drafting posts — and buys
+determinism and a loop with no tool surface for a transcript to inject into. Tagging moved to
+the local model too, once the pass kept its cross-batch shape: what made it a judgement call
+was that it has to see the whole run at once, not that it has to be Claude.
 
 Why a summary instead of a parse: the original collector took each session's **first prompt**
 as the item — the question, never the answer. The summary is built from the whole transcript,
@@ -398,7 +415,8 @@ POSTs summaries to `/api/ingest` and tags to `/api/items/tags` instead of openin
   raw_json, ignored, tags`. `iso_week` is the ISO week of `occurred_at`, so late collection
   files items into the week they actually happened — and an upsert deliberately leaves it
   alone, so a session resumed weeks later does not migrate out of a week already drafted.
-  `tags` is a JSON array assigned by the run's tagging pass; NULL means "not tagged yet".
+  `tags` is a JSON array assigned by the run's tagging pass; NULL means "not tagged yet",
+  which is distinct from `[]` — a tag set the pass deliberately left empty.
   Rows from the retired `github`, `obsidian` and `claude-web` sources are still there — the
   history is kept, only the collectors are gone.
 - **`drafts`** — `created_at, iso_week, input_snapshot, prompt_used, output` (JSON draft array).
