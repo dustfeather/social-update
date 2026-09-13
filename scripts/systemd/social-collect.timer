@@ -2,8 +2,11 @@
 Description=Daily social-update collection
 
 [Timer]
-OnCalendar=*-*-* 18:00:00
-# run after a missed window (WSL was down at 18:00) instead of silently skipping
+# 04:00, not 18:00: a run holds the whole GPU and most of the CPU for hours, and 18:00
+# is the middle of the evening. The poller's GPU guard covers the rest — including the
+# catch-up run Persistent= fires at boot, which can land at any hour.
+OnCalendar=*-*-* 04:00:00
+# run after a missed window (WSL was down at 04:00) instead of silently skipping
 Persistent=true
 
 [Install]
