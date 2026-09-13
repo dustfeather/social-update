@@ -150,6 +150,7 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 |-----|---------|
 | `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). The collection source. |
 | `CLAUDE_WORK_DIR` | Scratch dir for the manifest, summaries, tags and the state file (default `~/.cache/social-update/claude`). |
+| `CLAUDE_INCLUDE_SDK_SESSIONS` | Set to `1` to also summarize programmatic sessions (`entrypoint` `sdk-py`/`sdk-cli`: a plugin's agent fan-out, a script). Off by default — they journal the tooling, not the work, and on this machine they were 200 of 328 in-window transcripts. Task-tool sub-agents need no setting: they write no transcript of their own and are summarized inside their parent session. |
 | `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
 | `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model — summarizing is local. |
 | `VAULT_PATH` | Obsidian vault root — used by the vault-keeper scripts, not by collection. `~` and `$HOME` are expanded; quote paths with spaces. |

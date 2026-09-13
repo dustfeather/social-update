@@ -20,6 +20,49 @@ export const WORK_DIR = expandHome(
 // session file ever written.
 const LOOKBACK_DAYS = Number(process.env.CLAUDE_LOOKBACK_DAYS ?? 14);
 
+// Programmatic sessions are not the user's work.
+//
+// Every transcript records how the session was started. `cli` is a person at a
+// terminal; `sdk-py` / `sdk-cli` are a program driving Claude Code — a plugin's
+// review fan-out, a script, a scheduled job. Measured on this box: 229 of the 328
+// transcripts inside a 14-day window were `sdk-py`, nearly all of them the same
+// "Review this change for security vulnerabilities" agent firing once per changed
+// file. Summarizing those produces a journal of the tooling rather than of the work,
+// and costs about 5.7 hours of GPU time to do it.
+//
+// Task-tool sub-agents need no handling here: they leave no transcript of their own.
+// `isSidechain` exists as a field and is false in all 397 files on this machine, so
+// a sub-agent's turns live inside the parent session and are already summarized with
+// it, which is what you want.
+//
+// The test is a DENYLIST on `sdk`, not an allowlist on `cli`, and it fails OPEN: an
+// entrypoint this code has never heard of — a future editor or web client — is kept.
+// Dropping a real session is silent and unrecoverable; keeping an agent session costs
+// one mediocre summary.
+const INCLUDE_SDK = process.env.CLAUDE_INCLUDE_SDK_SESSIONS === "1";
+
+export function isProgrammaticSession(file: string): boolean {
+  if (INCLUDE_SDK) return false;
+  let fd: number;
+  try {
+    fd = fs.openSync(file, "r");
+  } catch {
+    return false;
+  }
+  try {
+    // The field repeats on most records, so the head is enough; reading a whole
+    // multi-megabyte transcript to classify it would cost more than summarizing it.
+    const buf = Buffer.alloc(64 * 1024);
+    const read = fs.readSync(fd, buf, 0, buf.length, 0);
+    const m = buf.subarray(0, read).toString("utf8").match(/"entrypoint"\s*:\s*"([^"]+)"/);
+    return m ? m[1].startsWith("sdk") : false;
+  } catch {
+    return false;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export interface SessionRef {
   session_id: string;
   project: string;
@@ -107,6 +150,7 @@ export function pendingSessions(): SessionRef[] {
       }
       if (st.mtimeMs < cutoff) continue;
       if (st.size === 0) continue;
+      if (isProgrammaticSession(full)) continue;
       const session_id = path.basename(file, ".jsonl");
       const mtime = new Date(st.mtimeMs).toISOString();
       const seen = state[session_id];
