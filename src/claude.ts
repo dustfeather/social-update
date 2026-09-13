@@ -95,12 +95,19 @@ export function acquireLock(): boolean {
   return true;
 }
 
+/** Drop the lock. Pair it with a successful acquireLock(); a second call is harmless.
+ *  Exported because collection is no longer the only job that holds the card — the tag
+ *  backfill takes the same lock. */
+export function releaseLock(): void {
+  fs.rmSync(LOCK_PATH, { force: true });
+}
+
 export async function collectClaude(): Promise<number> {
   if (!acquireLock()) return 0;
   try {
     return await collectClaudeLocked();
   } finally {
-    fs.rmSync(LOCK_PATH, { force: true });
+    releaseLock();
   }
 }
 

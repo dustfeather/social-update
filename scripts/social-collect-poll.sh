@@ -30,49 +30,91 @@ fi
 
 # Do not start a run while something else owns the GPU. The collector's model takes
 # ~7.9 GiB of this box's 8 GiB card and pegs 6 of 8 cores for the hours a run lasts, so
-# a run and a game are mutually exclusive here rather than merely slow together. Nothing
-# downstream notices: the watchdog probes only the router and ingest, and llama.cpp reacts
-# to a full card by dying on the allocation or crawling at a fraction of a token a second.
+# two GPU jobs here are mutually exclusive rather than merely slow together. Nothing
+# downstream notices: the watchdog probes only the router and ingest, and llama.cpp
+# answers a contended card by crawling at a fraction of a token a second.
 #
 # The check sits BEFORE the claim on purpose. Claiming first would consume the queued run
 # and then abandon it; deferring leaves it pending and the poll timer retries every few
 # seconds, so the run starts by itself once the card is free.
 #
-# VRAM being in use is NOT the test — our own resident model is the usual occupant, and a
-# run that reuses it allocates nothing. The card counts as taken only when the router does
-# not have the model loaded and the memory is gone anyway, which means someone else has it.
-# Known gap: a game started while our model is already resident is invisible to this, since
-# the VRAM reads the same either way.
-# Escape hatch: SOCIAL_COLLECT_GPU_GUARD=0. Threshold: SOCIAL_COLLECT_GPU_MAX_USED_MIB.
-gpu_taken_by_someone_else() {
-  [ "${SOCIAL_COLLECT_GPU_GUARD:-1}" = "0" ] && return 1
-  command -v nvidia-smi >/dev/null 2>&1 || return 1
+# The model being LOADED proves nothing either way. It is loaded whenever anything has
+# used it recently, and most of all while another job is mid-run — so "loaded" is as
+# consistent with "a backfill owns the card" as with "idle and ours to take". The three
+# tests below ask who is actually using it instead. Escape hatch: SOCIAL_COLLECT_GPU_GUARD=0.
+WORK_DIR="${CLAUDE_WORK_DIR:-$HOME/.cache/social-update/claude}"
+BUSY_STAMP="$HOME/.cache/social-update/gpu-busy.stamp"
+DEFER_STAMP="$HOME/.cache/social-update/gpu-deferred.stamp"
 
-  local used
-  used="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
-  # Anything unreadable fails OPEN. A guard that blocks collection because it could not
-  # parse a number would be a worse outage than the contention it exists to prevent.
-  case "$used" in ''|*[!0-9]*) return 1 ;; esac
-  [ "$used" -le "${SOCIAL_COLLECT_GPU_MAX_USED_MIB:-2000}" ] && return 1
+# Sets DEFER_WHY and returns 0 when this tick must not claim.
+should_defer() {
+  [ "${SOCIAL_COLLECT_GPU_GUARD:-1}" = "0" ] && return 1
+
+  # 1. Another job of ours holds the card. collect.lock is taken by the collector and,
+  #    since it is the same kind of GPU work, by the tag backfill. This is the test the
+  #    "is the model loaded" check could never be: an in-repo job is either holding a
+  #    live lock or it is not.
+  local lock="$WORK_DIR/collect.lock" pid
+  if [ -f "$lock" ]; then
+    pid="$(grep -oE '"pid":[0-9]+' "$lock" 2>/dev/null | head -1 | grep -oE '[0-9]+')"
+    if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+      DEFER_WHY="collect.lock held by live pid $pid"
+      return 0
+    fi
+  fi
 
   local router="${LLM_BASE_URL:-http://127.0.0.1:1921/v1}"
   router="${router%/v1}"
-  # An unreachable router with the memory gone counts as taken: we cannot confirm the
-  # occupant is ours, and a run against a dead router fails in the watchdog anyway.
-  curl -fsS -m 5 "$router/models" 2>/dev/null | grep -q "\"value\":\"loaded\"" && return 1
+  local models slots
+  models="$(curl -fsS -m 5 "$router/models" 2>/dev/null)"
+  # /slots must be asked through the router WITH ?model=, which is how it finds the child
+  # to proxy to; bare /slots is a 400 ("model name is missing from the request"). Reading
+  # the child's own port out of the argv the router reports does NOT work — /models carries
+  # both the requested port and the real one ("--port","0" and "--port","52180"), and
+  # nothing in the JSON says which is which.
+  slots="$(curl -fsS -m 5 "$router/slots?model=${LLM_MODEL:-qwen3.6-35b-a3b}" 2>/dev/null)"
 
-  GPU_USED_MIB="$used"
+  if [ -n "$slots" ]; then
+    # 2. The model is generating for SOMEONE — a job outside this repo, another session,
+    #    a hand-run script. /slots is the only thing that knows; the lock cannot see them.
+    if printf '%s' "$slots" | grep -q '"is_processing":true'; then
+      mkdir -p "$(dirname "$BUSY_STAMP")"; : > "$BUSY_STAMP"
+      DEFER_WHY="model busy — a slot is processing"
+      return 0
+    fi
+    # 3. Slots go idle for a beat between one chunk and the next, and a poll tick landing
+    #    in that gap would read a busy model as free. Require a quiet stretch first.
+    local quiet="${SOCIAL_COLLECT_GPU_QUIET_S:-120}" idle_for
+    if [ -f "$BUSY_STAMP" ]; then
+      idle_for="$(( $(date +%s) - $(stat -c %Y "$BUSY_STAMP") ))"
+      if [ "$idle_for" -lt "$quiet" ]; then
+        DEFER_WHY="model idle for only ${idle_for}s of the ${quiet}s quiet period"
+        return 0
+      fi
+    fi
+  fi
+
+  # 4. The memory is gone and the router is not the one holding it: a Windows-side game
+  #    or any other GPU application. Anything unreadable fails OPEN — a guard that stopped
+  #    collection because it could not parse a number would be a worse outage than the
+  #    contention it exists to prevent.
+  command -v nvidia-smi >/dev/null 2>&1 || return 1
+  local used
+  used="$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | head -1 | tr -d ' ')"
+  case "$used" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$used" -le "${SOCIAL_COLLECT_GPU_MAX_USED_MIB:-2000}" ] && return 1
+  printf '%s' "$models" | grep -q "\"value\":\"loaded\"" && return 1
+  DEFER_WHY="${used} MiB of VRAM held by something outside the router"
   return 0
 }
 
-if gpu_taken_by_someone_else; then
-  # One line per ten minutes, not one per poll tick: this runs every few seconds and the
+if should_defer; then
+  # One line per ten minutes, not one per poll tick: this runs every few seconds and a
   # deferral can last a whole evening.
-  stamp="$HOME/.cache/social-update/gpu-deferred.stamp"
-  mkdir -p "$(dirname "$stamp")"
-  if [ ! -f "$stamp" ] || [ "$(( $(date +%s) - $(stat -c %Y "$stamp") ))" -ge 600 ]; then
-    echo "deferred: ${GPU_USED_MIB} MiB of VRAM held by something other than the model — leaving any queued run pending"
-    : > "$stamp"
+  mkdir -p "$(dirname "$DEFER_STAMP")"
+  if [ ! -f "$DEFER_STAMP" ] || [ "$(( $(date +%s) - $(stat -c %Y "$DEFER_STAMP") ))" -ge 600 ]; then
+    echo "deferred: $DEFER_WHY — leaving any queued run pending"
+    : > "$DEFER_STAMP"
   fi
   exit 0
 fi

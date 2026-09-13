@@ -4,6 +4,7 @@ import { fetchUntagged } from "./untagged";
 import { assignTags } from "./tag-pass";
 import { applyTags } from "./sink";
 import { loadModel, unloadModel, LLM_MODEL } from "./llm";
+import { acquireLock, releaseLock } from "./claude";
 import { replaceFileDurable } from "./durable";
 import { WORK_DIR } from "./claude-sessions";
 
@@ -41,7 +42,22 @@ const SOURCE = flag("--source") ?? "claude";
 // built from that week rather than from the whole backlog.
 const WEEK = flag("--week");
 
+// Under the collector's lock, not beside it. A backfill is a second GPU job of exactly
+// the kind that lock exists to keep off the card: both drive the same llama-server, so
+// a nightly collection landing on top of a manual backfill halves the throughput of
+// each and pushes both toward the request timeout. It also gives the poller one honest
+// thing to test — "is a run in progress" — where "the model is loaded" says nothing,
+// since the model is loaded precisely BECAUSE another job is mid-run.
 async function main(): Promise<number> {
+  if (!acquireLock()) return 0;
+  try {
+    return await backfill();
+  } finally {
+    releaseLock();
+  }
+}
+
+async function backfill(): Promise<number> {
   const all = await fetchUntagged(SOURCE, WEEK);
   const candidates = LIMIT > 0 ? all.slice(0, LIMIT) : all;
   const scope = WEEK ? `source "${SOURCE}" in ${WEEK}` : `source "${SOURCE}"`;
