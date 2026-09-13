@@ -24,9 +24,7 @@ config({ quiet: true });
 // A wall-clock ceiling on the whole run. Overrunning is graceful by construction —
 // every session summarized so far is imported, and the ones never reached keep
 // their state entry and come back next run — so this is a brake, not a deadline.
-// (CLAUDE_AGENT_TIMEOUT_MIN is the old name from the agent era, still honoured.)
-const BUDGET_MS =
-  Number(process.env.CLAUDE_COLLECT_BUDGET_MIN ?? process.env.CLAUDE_AGENT_TIMEOUT_MIN ?? 120) * 60_000;
+const BUDGET_MS = Number(process.env.CLAUDE_COLLECT_BUDGET_MIN ?? 120) * 60_000;
 
 // Two collectors in the same WORK_DIR destroy each other: they write over one
 // manifest, one progress ledger and one state file, and — with LC_ROUTER_MAX=1 —

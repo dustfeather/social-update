@@ -151,7 +151,7 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 | `CLAUDE_PROJECTS` | Claude Code session logs root (`~/.claude/projects`). The collection source. |
 | `CLAUDE_WORK_DIR` | Scratch dir for the manifest, summaries, tags and the state file (default `~/.cache/social-update/claude`). |
 | `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
-| `CLAUDE_AGENT_TIMEOUT_MIN` | Hard ceiling on the orchestrating agent (default 45). On timeout the run salvages whatever summaries exist. |
+| `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model — summarizing is local. |
 | `VAULT_PATH` | Obsidian vault root — used by the vault-keeper scripts, not by collection. `~` and `$HOME` are expanded; quote paths with spaces. |
 | `INGEST_URL` | Cluster base URL. Set → POST to `/api/ingest`; unset → write a local SQLite file. |
 | `PORT` | Web server port. |
