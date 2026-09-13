@@ -192,13 +192,58 @@ async function modelStatus(): Promise<{ managed: boolean; status?: string | null
  * reclaim VRAM nobody asked us for. Checking status first is also what makes this
  * idempotent: POST /models/load against a resident model is a 400, not a no-op.
  */
+/**
+ * Wait until the model is actually SERVING, not merely reported loaded.
+ *
+ * `status: "loaded"` is the router's view of its child. The child binds its port
+ * and finishes bringing a multi-GB model up some seconds later, so the first real
+ * request of a run can die `TypeError: fetch failed` (ECONNREFUSED) while every
+ * later one succeeds. The transport retry around chat() is 3s + 6s, nowhere near
+ * long enough for that, and the chunk it was carrying is lost. One cheap
+ * one-token request, retried, closes the window.
+ */
+async function waitServing(): Promise<void> {
+  const deadline = Date.now() + LOAD_TIMEOUT_MS;
+  let last = "no attempt completed";
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(`${LLM_BASE}/chat/completions`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer local" },
+        body: JSON.stringify({
+          model: LLM_MODEL,
+          messages: [{ role: "user", content: "ok" }],
+          max_tokens: 1,
+          stream: false,
+          chat_template_kwargs: { enable_thinking: false },
+        }),
+        signal: AbortSignal.timeout(30_000),
+      });
+      await res.text(); // drain, so the connection is not left half-read
+      if (res.ok) return;
+      last = `HTTP ${res.status}`;
+    } catch (e) {
+      last = String(e).slice(0, 120);
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(
+    `model ${LLM_MODEL} reports loaded but is not serving after ${LOAD_TIMEOUT_MS / 1000}s (${last})`
+  );
+}
+
 export async function loadModel(): Promise<boolean> {
   const { managed, status } = await modelStatus();
   if (!managed) return false; // nothing to drive; inference will still work
   if (status === null) {
     throw new Error(`the router serves no model named "${LLM_MODEL}" — check GET ${ROUTER}/models`);
   }
-  if (status === "loaded") return false;
+  if (status === "loaded") {
+    // Loaded by someone else, or still coming up from an earlier load — either
+    // way this run must not send real work before the child answers.
+    await waitServing();
+    return false;
+  }
 
   // A load issued moments after an unload can be refused with a 400 while the
   // previous child is still tearing down. It is transient, so re-read the status
@@ -218,7 +263,10 @@ export async function loadModel(): Promise<boolean> {
   const deadline = Date.now() + LOAD_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const { status: st } = await modelStatus();
-    if (st === "loaded") return true;
+    if (st === "loaded") {
+      await waitServing();
+      return true;
+    }
     if (st === "failed" || st === "error") {
       throw new Error(`model ${LLM_MODEL} failed to load (status ${st})`);
     }
