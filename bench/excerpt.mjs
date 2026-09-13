@@ -74,6 +74,26 @@ function blockToText(block) {
   }
 }
 
+/**
+ * The working directory the session ran in, read from the transcript itself.
+ *
+ * The directory name under ~/.claude/projects is the cwd with every "/" replaced by
+ * "-", which does not invert: a path containing a hyphen, a UUID or a temp
+ * directory comes back shredded ("projects/flotila/9dcb0e32/0520/48d5/..."). Every
+ * record carries the real `cwd`, so read it rather than trying to undo the mangling.
+ */
+export function sessionCwd(jsonlPath) {
+  const lines = fs.readFileSync(jsonlPath, "utf8").split("\n");
+  for (const line of lines) {
+    if (!line) continue;
+    try {
+      const o = JSON.parse(line);
+      if (typeof o.cwd === "string" && o.cwd) return o.cwd;
+    } catch { /* a truncated line is not worth failing over */ }
+  }
+  return null;
+}
+
 /** The conversation, as an ordered list of `{ role, text }`, noise removed. */
 export function extractTurns(jsonlPath) {
   const turns = [];

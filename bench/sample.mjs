@@ -8,9 +8,19 @@
 
 import fs from "fs";
 import path from "path";
-import { excerpt } from "./excerpt.mjs";
+import { excerpt, sessionCwd } from "./excerpt.mjs";
 
 const ROOT = path.join(process.env.HOME, ".claude", "projects");
+
+const HOME = process.env.HOME ?? "";
+
+// A readable name for where the work happened. The transcript's own cwd is the
+// truth; the directory name is a lossy encoding of it and is only a fallback.
+function projectName(transcriptPath, dirName) {
+  const cwd = sessionCwd(transcriptPath);
+  if (cwd) return cwd.startsWith(HOME) ? cwd.slice(HOME.length).replace(/^\//, "~/") || "~" : cwd;
+  return dirName.replace(/^-home-dustfeather-/, "").replace(/-/g, "/");
+}
 
 export function allSessions() {
   const out = [];
@@ -22,7 +32,7 @@ export function allSessions() {
       const p = path.join(full, f);
       out.push({
         session_id: f.replace(/\.jsonl$/, ""),
-        project: dir.replace(/^-home-dustfeather-/, "").replace(/-/g, "/"),
+        project: projectName(p, dir),
         path: p,
         size: fs.statSync(p).size,
         mtime: fs.statSync(p).mtime.toISOString(),

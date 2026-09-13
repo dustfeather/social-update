@@ -5,7 +5,8 @@
 // nothing else. Swapping engines is a base-URL change, which is the property that
 // lets this benchmark be re-run later against a different backend without edits.
 //
-//   node bench/run.mjs --model qwen3:8b --n 12
+//   node bench/run.mjs                                  # default model, 12 sessions
+//   node bench/run.mjs --model qwen3.6-35b-a3b-q8 --think
 //
 // Results land in bench/results/<tag>.json — one file per model, so a run can be
 // interrupted and resumed a model at a time.
@@ -23,15 +24,24 @@ const arg = (name, def) => {
   return i === -1 ? def : process.argv[i + 1];
 };
 
-const MODEL = arg("model");
-const BASE = arg("base", "http://127.0.0.1:11434/v1");
+const MODEL = arg("model", process.env.LLM_MODEL ?? "qwen3.6-35b-a3b");
+const BASE = arg("base", process.env.LLM_BASE_URL ?? "http://127.0.0.1:1921/v1");
 const N = Number(arg("n", 12));
 const MAX_ATTEMPTS = Number(arg("attempts", 3));
 const TAG = arg("tag", MODEL?.replace(/[^\w.-]/g, "_"));
 const TEMP = Number(arg("temp", 0.2));
+// The served model reasons before it answers, and llama-server puts that in
+// `reasoning_content`, not `content`. Filling a fixed six-field schema does not
+// need it, and 150 sessions each paying for a thought is the dominant cost of a
+// run — so it is off unless --think is passed.
+const THINK = process.argv.includes("--think");
+// The run unloads when it finishes. Pass --keep-loaded to leave the model resident,
+// which is what you want while iterating: a reload is 25s of every cycle.
+const KEEP_LOADED = process.argv.includes("--keep-loaded");
+const MAX_TOKENS = Number(arg("max-tokens", THINK ? 4096 : 1200));
 
 if (!MODEL) {
-  console.error("usage: node bench/run.mjs --model <name> [--base URL] [--n 12] [--attempts 3]");
+  console.error("usage: node bench/run.mjs [--model NAME] [--base URL] [--n 12] [--attempts 3] [--think] [--keep-loaded]");
   process.exit(2);
 }
 
@@ -44,17 +54,29 @@ async function chat(messages) {
       model: MODEL,
       messages,
       temperature: TEMP,
-      max_tokens: 1200,
+      max_tokens: MAX_TOKENS,
       stream: false,
+      chat_template_kwargs: { enable_thinking: THINK },
     }),
   });
   if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 300)}`);
   const body = await res.json();
-  return {
-    text: body.choices?.[0]?.message?.content ?? "",
-    ms: Date.now() - t0,
-    usage: body.usage ?? {},
-  };
+  const choice = body.choices?.[0] ?? {};
+  const text = choice.message?.content ?? "";
+
+  // A thinking model that spends its whole completion budget on the thought
+  // returns content="" with finish_reason="length" — an empty string, never an
+  // error. Unnamed, that reaches the classifier below as "no-json" and reads as a
+  // model too weak to emit an object, which is the wrong conclusion and sends you
+  // looking for a better model instead of a bigger budget.
+  if (!text.trim() && choice.finish_reason === "length") {
+    throw new Error(
+      `empty content with finish_reason=length — the reasoning block consumed all ` +
+      `${MAX_TOKENS} completion tokens (${body.usage?.completion_tokens ?? "?"} used). ` +
+      `Raise --max-tokens, or drop --think.`
+    );
+  }
+  return { text, ms: Date.now() - t0, usage: body.usage ?? {} };
 }
 
 // Classifying HOW a model fails is the useful part. "invalid" lumps together a
@@ -128,41 +150,155 @@ async function runOne(session) {
   };
 }
 
-const sample = pickSample(N);
-fs.mkdirSync(RESULTS, { recursive: true });
-console.log(`${MODEL} @ ${BASE} — ${sample.length} sessions, max ${MAX_ATTEMPTS} attempts each\n`);
+// --- model lifecycle -------------------------------------------------------
+//
+// The router serves no model of its own: it spawns a child llama-server on demand
+// and, with LC_ROUTER_MAX=1, can hold exactly one. Loading and unloading around the
+// run is explicit rather than incidental so the ~7.9 GiB of VRAM the child holds is
+// released the moment the work is done, instead of lingering until something else
+// needs the GPU and finds it occupied.
+//
+// These endpoints live at the router ROOT, not under /v1 — that prefix is the
+// OpenAI-compatible surface, and model management is not part of it.
+const ROUTER = BASE.replace(/\/v1\/?$/, "");
+let loadedByUs = false;
 
-// Ollama holds one model at a time (OLLAMA_MAX_LOADED_MODELS=1), so the first
-// request after a model switch pays the whole cold load — tens of seconds for a
-// large MoE read off disk. Charging that to session 1 would make whichever model
-// ran first look slow, and it would scale straight into the "150 sessions would
-// take" estimate at the end.
-process.stdout.write("warming up (cold load is not counted) ... ");
-const warmStart = Date.now();
-try {
-  await chat([{ role: "user", content: "Reply with the single word: ready" }]);
-  console.log(`${((Date.now() - warmStart) / 1000).toFixed(1)}s\n`);
-} catch (e) {
-  console.log(`FAILED\n\n${e}\n`);
-  process.exit(1);
+async function routerPost(path) {
+  const res = await fetch(`${ROUTER}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ model: MODEL }),
+  });
+  return res;
 }
 
+// `{ managed: false }` means this endpoint has no router management API at all —
+// a plain llama-server, or Ollama. That is not a failure: there is simply no model
+// lifecycle to drive, and the run should proceed.
+async function modelStatus() {
+  let res;
+  try {
+    res = await fetch(`${ROUTER}/models`);
+  } catch {
+    return { managed: false };
+  }
+  if (!res.ok) return { managed: false };
+  const body = await res.json();
+  const entry = body.data?.find((m) => m.id === MODEL || m.aliases?.includes(MODEL));
+  if (!entry) return { managed: true, status: null };
+  return { managed: true, status: entry.status?.value ?? null };
+}
+
+/**
+ * Returns true only if THIS run loaded the model — which is exactly the condition
+ * for unloading it afterwards.
+ *
+ * A model that was already resident belongs to whoever loaded it. Unloading that on
+ * our way out would evict a model another process is mid-way through using, to save
+ * VRAM nobody asked us to reclaim. Checking status first is also what makes loading
+ * idempotent: POST /models/load on a resident model is a 400, not a no-op.
+ */
+async function loadModel() {
+  const { managed, status } = await modelStatus();
+  if (!managed) {
+    console.log("no router management API here — skipping explicit load/unload");
+    return false;
+  }
+  if (status === null) {
+    throw new Error(`the router serves no model named "${MODEL}" — check GET ${ROUTER}/models`);
+  }
+  if (status === "loaded") {
+    process.stdout.write("(already resident, left as found) ");
+    return false;
+  }
+
+  // A load issued moments after an unload can be refused with a 400 while the
+  // previous child is still tearing down — observed immediately after a completed
+  // run. It is transient, so re-read the status and retry briefly rather than
+  // failing a three-hour job on a race with our own cleanup.
+  let res = await routerPost("/models/load");
+  for (let i = 0; i < 10 && res.status === 400; i++) {
+    const { status: st } = await modelStatus();
+    if (st === "loaded") return false; // somebody else won the race; not ours
+    await new Promise((r) => setTimeout(r, 2000));
+    res = await routerPost("/models/load");
+  }
+  if (!res.ok) throw new Error(`/models/load → ${res.status} ${(await res.text()).slice(0, 200)}`);
+
+  // The load is asynchronous: 200 means accepted, not resident — measured as
+  // `{"success":true}` in 0.0s with VRAM still untouched. Poll until the router
+  // says loaded, so the cold load is not charged to session 1.
+  const deadline = Date.now() + 300_000;
+  while (Date.now() < deadline) {
+    const { status: st } = await modelStatus();
+    if (st === "loaded") return true;
+    if (st === "failed" || st === "error") throw new Error(`model ${MODEL} failed to load (status ${st})`);
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error(`model ${MODEL} did not reach "loaded" within 300s`);
+}
+
+async function unloadModel() {
+  if (!loadedByUs) return;
+  loadedByUs = false;
+  if (KEEP_LOADED) {
+    console.log(`leaving ${MODEL} resident (--keep-loaded)`);
+    return;
+  }
+  try {
+    const res = await routerPost("/models/unload");
+    console.log(res.ok ? `unloaded ${MODEL}` : `unload returned ${res.status}`);
+  } catch (e) {
+    console.error(`unload failed: ${e}`);
+  }
+}
+
+// Ctrl-C during a three-hour run would otherwise leave the child resident.
+for (const sig of ["SIGINT", "SIGTERM"]) {
+  process.on(sig, async () => {
+    console.log(`\n${sig} — unloading before exit`);
+    await unloadModel();
+    process.exit(130);
+  });
+}
+
+const sample = pickSample(N);
+fs.mkdirSync(RESULTS, { recursive: true });
+console.log(`${MODEL} @ ${BASE} — ${sample.length} sessions, max ${MAX_ATTEMPTS} attempts each, thinking ${THINK ? "on" : "off"}\n`);
+
+// Load the model up front rather than letting session 1 trigger it. A cold load is
+// 25.4s for the 20.6 GiB Q4_K_M; charged to the first session it distorts that row
+// and then scales into the "150 sessions would take" estimate at the end.
+process.stdout.write(`loading ${MODEL} ... `);
+const loadStart = Date.now();
+loadedByUs = await loadModel();
+console.log(`${((Date.now() - loadStart) / 1000).toFixed(1)}s\n`);
+
 const rows = [];
-for (const [i, s] of sample.entries()) {
-  process.stdout.write(`[${String(i + 1).padStart(2)}/${sample.length}] ${s.session_id.slice(0, 8)} `);
-  const r = await runOne(s);
-  rows.push(r);
-  const first = r.attempts[0]?.mode ?? "?";
-  console.log(
-    `${r.valid ? "OK " : "FAIL"} attempts=${r.attemptsUsed ?? "-"} ` +
-    `${(r.totalMs / 1000).toFixed(1)}s first=${first}`
-  );
+try {
+  for (const [i, s] of sample.entries()) {
+    process.stdout.write(`[${String(i + 1).padStart(2)}/${sample.length}] ${s.session_id.slice(0, 8)} `);
+    const r = await runOne(s);
+    rows.push(r);
+    const first = r.attempts[0]?.mode ?? "?";
+    console.log(
+      `${r.valid ? "OK " : "FAIL"} attempts=${r.attemptsUsed ?? "-"} ` +
+      `${(r.totalMs / 1000).toFixed(1)}s first=${first}`
+    );
+  }
+} finally {
+  // Whatever happened — finished, threw, or a session wedged — a model this run
+  // loaded holds ~7.9 GiB of VRAM until it is told otherwise, and nothing else on
+  // this box can use the GPU meanwhile. One we found already resident is left
+  // alone; it is not ours to evict.
+  await unloadModel();
 }
 
 const valid = rows.filter((r) => r.valid);
 const firstPass = rows.filter((r) => r.attempts[0]?.mode === "ok");
 const summary = {
-  model: MODEL, base: BASE, temp: TEMP, n: rows.length, ran_at: new Date().toISOString(),
+  model: MODEL, base: BASE, temp: TEMP, think: THINK, max_tokens: MAX_TOKENS,
+  n: rows.length, ran_at: new Date().toISOString(),
   valid_at_1: firstPass.length / rows.length,
   valid_at_n: valid.length / rows.length,
   mean_attempts: valid.length ? valid.reduce((a, r) => a + r.attemptsUsed, 0) / valid.length : null,
