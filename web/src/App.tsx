@@ -4,6 +4,7 @@ import { htmlToText, textToHtml, firstUrl, sanitizeHtml, sanitizeElement, safeHr
 import {
   fetchWeeks,
   fetchItems,
+  fetchDrafts,
   generate,
   requestCollect,
   fetchCollectStatus,
@@ -108,6 +109,28 @@ export default function App() {
       })
       .catch((e) => setError(e.message));
   }, [week, page]);
+
+  // Load the week's saved drafts. Generating writes a row and every edit is
+  // PUT back onto it, but nothing read them again — so a reload, or coming back
+  // to the week later, showed no editor at all and the work looked lost. Only
+  // the newest row is opened: a regenerate inserts a new one rather than
+  // overwriting, so the older rows are previous generations, not edits.
+  useEffect(() => {
+    if (!week) return;
+    let current = true;
+    fetchDrafts(week)
+      .then((rows) => {
+        if (!current) return; // a faster week switch already won
+        const newest = rows[0];
+        setDrafts(newest?.drafts ?? []);
+        setDraftId(newest?.id ?? null);
+        setSaveState("idle");
+      })
+      .catch((e) => setError(e.message));
+    return () => {
+      current = false;
+    };
+  }, [week]);
 
   // Reset to page 1 and clear stale drafts when switching weeks.
   function selectWeek(w: string) {
@@ -276,8 +299,12 @@ export default function App() {
           <p className="hint">
             Editable — format the text and add links, then share. Edits save automatically.
           </p>
+          {/* Keyed by the row, not just the index: the editor seeds itself from its
+              draft ONCE per mount, so a bare index lets React reuse card 0 of the
+              previous week — or of the generation before a regenerate — and the
+              editor keeps showing the draft it was first mounted with. */}
           {drafts.map((d, i) => (
-            <DraftCard key={i} draft={d} onChange={(next) => editDraft(i, next)} />
+            <DraftCard key={`${draftId}-${i}`} draft={d} onChange={(next) => editDraft(i, next)} />
           ))}
         </section>
       )}
@@ -400,10 +427,24 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // The editor is UNCONTROLLED on purpose: re-rendering a contenteditable from
   // React state on every keystroke resets the caret to the start. Seed it once,
   // then read back out of the DOM.
-  // Sanitized on the way in: this string is handed to dangerouslySetInnerHTML,
-  // and draft.html has been round-tripped through the API and the DB since it
-  // was last in a trusted DOM.
+  // Sanitized on the way in: draft.html has been round-tripped through the API
+  // and the DB since it was last in a trusted DOM.
   const initialHtml = useRef(sanitizeHtml(draft.html ?? textToHtml(draft.text)));
+
+  // Seeded by hand, NOT with dangerouslySetInnerHTML.
+  //
+  // Measured: with that prop on the div, every keystroke was erased. Typing fires
+  // onInput -> onChange -> setDrafts, App re-renders, and React re-applies the
+  // prop — writing the ORIGINAL seed back over what was just typed. The character
+  // reached React state (the counter advanced, the row saved) and vanished from
+  // the DOM, which reads as "the editor won't let me type".
+  //
+  // Assigning innerHTML once on mount keeps the markup out of React's diff
+  // entirely: the div has no children prop, so nothing re-renders it and the
+  // browser owns its content, which is what "uncontrolled" was supposed to mean.
+  useEffect(() => {
+    if (editor.current) editor.current.innerHTML = initialHtml.current;
+  }, []);
 
   function syncFromEditor() {
     const el = editor.current;
@@ -582,7 +623,6 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
         suppressContentEditableWarning
         onInput={syncFromEditor}
         onBlur={syncFromEditor}
-        dangerouslySetInnerHTML={{ __html: initialHtml.current }}
       />
 
       <div className="share">

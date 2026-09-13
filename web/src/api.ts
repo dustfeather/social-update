@@ -48,6 +48,18 @@ export const fetchWeeks = () => getJson<WeekRow[]>("/api/weeks");
 export const fetchItems = (week: string, page: number, limit: number) =>
   getJson<ItemsPage>(`/api/items?week=${encodeURIComponent(week)}&page=${page}&limit=${limit}`);
 
+/** One saved generation for a week. The server stores the whole draft array as a
+ *  row's `output`, so a week can have several — newest first. */
+export interface DraftRow {
+  id: number;
+  created_at: string;
+  iso_week: string;
+  drafts: Draft[];
+}
+
+export const fetchDrafts = (week: string) =>
+  getJson<DraftRow[]>(`/api/drafts?week=${encodeURIComponent(week)}`);
+
 export interface CollectRun {
   id: number;
   status: "pending" | "running" | "done" | "error";
