@@ -12,6 +12,11 @@ import type { SessionRef } from "./claude-sessions";
 // thing judging it is the real validator rather than a second opinion.
 
 const MAX_ATTEMPTS = Number(process.env.LLM_ATTEMPTS ?? 3);
+// Transport failures get their own, separate budget. They are not something the
+// model can correct, so they do not consume a validation attempt — but they are
+// often transient (a server still warming, a slot briefly occupied), and failing a
+// session on the first one throws away a minute of GPU time for nothing.
+const TRANSPORT_RETRIES = Number(process.env.LLM_TRANSPORT_RETRIES ?? 2);
 
 export const SYSTEM = `You summarize one Claude Code coding session into a single JSON object.
 
@@ -85,6 +90,10 @@ export function extractJson(raw: string): unknown | undefined {
 
 export interface SummarizeResult {
   ok: boolean;
+  /** The failure was the transport, not the model. Repeated across sessions it means
+   *  the server is unwell, and grinding through the rest of the backlog to fail each
+   *  one the same way just converts a stoppable outage into 300 failed sessions. */
+  transport?: boolean;
   summary?: SessionSummary;
   attempts: number;
   ms: number;
@@ -114,13 +123,20 @@ export async function summarizeSession(session: SessionRef): Promise<SummarizeRe
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     let reply;
-    try {
-      reply = await chat(messages);
-    } catch (e) {
-      // A transport failure is not something the model can correct, and retrying
-      // it here would just re-send a 24k-character prompt into the same wall.
-      // The session keeps its state entry and comes back on the next run.
-      return { ok: false, attempts: attempt, ms, outputTokens, errors: [String(e).slice(0, 300)] };
+    let transportError = "";
+    for (let t = 0; t <= TRANSPORT_RETRIES; t++) {
+      try {
+        reply = await chat(messages);
+        break;
+      } catch (e) {
+        transportError = String(e).slice(0, 300);
+        if (t < TRANSPORT_RETRIES) await new Promise((r) => setTimeout(r, 3000 * (t + 1)));
+      }
+    }
+    if (!reply) {
+      // Out of transport retries. The session keeps its state entry and comes back
+      // on the next run; the caller decides whether the whole run should stop.
+      return { ok: false, transport: true, attempts: attempt, ms, outputTokens, errors: [transportError] };
     }
     ms += reply.ms;
     outputTokens += reply.outputTokens;

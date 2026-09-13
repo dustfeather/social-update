@@ -103,6 +103,19 @@ export async function collectClaude(): Promise<number> {
 // cluster's /api/ingest.
 const IMPORT_BATCH = Number(process.env.CLAUDE_IMPORT_BATCH ?? 10);
 
+// Stop the run after this many consecutive TRANSPORT failures.
+//
+// A model failure is per-session: a transcript the model cannot summarize says
+// nothing about the next one. A transport failure is usually about the server, and
+// an unwell server fails every remaining session in milliseconds — so without this,
+// one wedged llama-server converts a recoverable outage into a 300-session sweep of
+// failures, and the log looks like the model got catastrophically worse. Observed
+// after SIGKILLing a run mid-generation: the next request came back
+// `500 "Context size has been exceeded."` on a prompt that fits the context twice
+// over, because the child still held the KV slot. Stopping leaves every unreached
+// session pending, which is the outcome that costs nothing.
+const MAX_CONSECUTIVE_TRANSPORT_FAILURES = Number(process.env.CLAUDE_MAX_TRANSPORT_FAILURES ?? 5);
+
 async function collectClaudeLocked(): Promise<number> {
   const manifest = buildManifest();
   const count = manifest.sessions.length;
@@ -191,6 +204,7 @@ async function collectClaudeLocked(): Promise<number> {
 
   let ok = 0;
   let failed = 0;
+  let consecutiveTransportFailures = 0;
   let loadedByUs = false;
   const release = async () => { await unloadModel(loadedByUs); loadedByUs = false; };
   const onSignal = (sig: string) => {
@@ -235,8 +249,21 @@ async function collectClaudeLocked(): Promise<number> {
       if (!result.ok) {
         failed++;
         console.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
+        if (result.transport) {
+          if (++consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
+            console.error(
+              `[collect] claude: ${consecutiveTransportFailures} consecutive transport failures — ` +
+              `the model server looks unwell, stopping. The remaining ` +
+              `${todo.length - i - 1} session(s) stay pending.`
+            );
+            break;
+          }
+        } else {
+          consecutiveTransportFailures = 0;
+        }
         continue;
       }
+      consecutiveTransportFailures = 0;
 
       // Write the summary, then record the fingerprint it was written from. In that
       // order: a crash between the two leaves a summary with no ledger entry, which
