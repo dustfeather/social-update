@@ -39,16 +39,29 @@ export interface ImportReport {
   missing: string[];
 }
 
-export async function importSummaries(): Promise<ImportReport> {
+/**
+ * Import the summaries on disk and advance state for the ones that landed.
+ *
+ * `only` narrows it to a subset of the manifest, which is how the collector
+ * commits a long run in batches: a five-hour backlog that imported once at the end
+ * lost everything it had done when the machine went down, because state.json is
+ * what makes a session stop being pending. Importing is idempotent — the DB
+ * upserts on (source, external_id) — so a batch replayed after a crash is
+ * harmless.
+ */
+export async function importSummaries(only?: string[]): Promise<ImportReport> {
   const manifestPath = path.join(WORK_DIR, "manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as Manifest;
+
+  const wanted = only ? new Set(only) : null;
+  const sessions = wanted ? manifest.sessions.filter((r) => wanted.has(r.session_id)) : manifest.sessions;
 
   const rows: ItemInput[] = [];
   const invalid: ImportReport["invalid"] = [];
   const missing: string[] = [];
   const imported: string[] = [];
 
-  for (const ref of manifest.sessions) {
+  for (const ref of sessions) {
     const file = path.join(manifest.summary_dir, `${ref.session_id}.json`);
     if (!fs.existsSync(file)) {
       missing.push(ref.session_id); // sub-agent never wrote it — stays pending
@@ -70,7 +83,7 @@ export async function importSummaries(): Promise<ImportReport> {
   // that failed validation, or was never written, must be retried next run —
   // which is exactly what leaving its state entry alone achieves.
   const state = readState();
-  for (const ref of manifest.sessions) {
+  for (const ref of sessions) {
     if (imported.includes(ref.session_id)) {
       state[ref.session_id] = { mtime: ref.mtime, size: ref.size };
     }

@@ -60,6 +60,8 @@ lifecycle to drive and the run proceeds without one.
 
 ## Running it
 
+> `npm run build` first — `excerpt.mjs` and `prompt.mjs` re-export from `dist/`.
+
 ```sh
 systemctl is-active llama-router     # the router must be up
 npm run build                        # the runner scores against dist/summary.js
@@ -74,9 +76,13 @@ Results land in `bench/results/<tag>.json` (gitignored), one file per model.
 - **The sample is fixed and stratified by size**, not random. A comparison is only
   meaningful if every candidate reads identical bytes, and size is what varies the
   task — a 6-turn session and a 620-turn one are different problems.
-- **Excerpting is deterministic JS.** `excerpt.mjs` outlives the benchmark: the
-  production collector needs exactly the same function.
-- **Scoring calls `dist/summary.js`**, the real validator, not a copy of its rules.
+- **Excerpting is deterministic JS**, and it outlived the benchmark: the collector
+  now uses exactly the same function, so `excerpt.mjs` is a re-export of
+  `dist/excerpt.js` rather than a second copy.
+- **The prompt and the validator are the production ones** (`dist/summarize.js`,
+  `dist/summary.js`), re-exported rather than duplicated. A benchmark scoring its
+  own copy of the rules measures the copy — and one whose prompt has drifted from
+  production stops predicting anything about production, which is its only job.
 - **It checks meaning, not shape** — that the session id was copied rather than
   invented, that the title has no trailing period, that highlights number one to
   five. Constrained decoding can produce a well-formed object full of wrong values,
@@ -89,7 +95,7 @@ Results land in `bench/results/<tag>.json` (gitignored), one file per model.
 
 | File | Purpose |
 |---|---|
-| `excerpt.mjs` | transcript → bounded deterministic excerpt; also reads the session's real `cwd` |
+| `excerpt.mjs` | re-export of `dist/excerpt.js` — transcript → bounded deterministic excerpt, and the session's real `cwd` |
 | `sample.mjs`  | the fixed, size-stratified session sample |
-| `prompt.mjs`  | the one prompt every model is judged on, plus the correction turn |
+| `prompt.mjs`  | re-export of the production prompt (`dist/summarize.js`) and validator (`dist/summary.js`) |
 | `run.mjs`     | model lifecycle, the self-correction loop, timing, failure classification |

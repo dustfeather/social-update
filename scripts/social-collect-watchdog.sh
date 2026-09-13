@@ -17,11 +17,19 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
-# Collection is one `claude -p` agent run that fans out a sub-agent per new or
-# changed session transcript (see src/claude.ts). It needs the `claude` CLI on
-# PATH and nothing else — no browser, no display, no debug port. A run with no
-# new sessions exits clean having written nothing.
-command -v claude >/dev/null || { echo "ERROR: claude CLI not on PATH — collection cannot run"; exit 1; }
+# Collection loops over a LOCAL model, one call per new or changed session
+# transcript (see src/claude.ts). It no longer shells out to the `claude` CLI, so
+# the precondition is the llama.cpp router being reachable — not a Claude session.
+# No browser, no display, no debug port. A run with no new sessions exits clean
+# having written nothing.
+#
+# Checked, not assumed: without the router every session fails one after another
+# and the run still exits 0 having written nothing, which is indistinguishable
+# from "no new sessions" in the log.
+LLM_BASE_URL="${LLM_BASE_URL:-http://127.0.0.1:1921/v1}"
+LLM_ROUTER="${LLM_BASE_URL%/v1}"
+curl -fsS --max-time 10 -o /dev/null "$LLM_ROUTER/models" || {
+  echo "ERROR: llama.cpp router unreachable at $LLM_ROUTER — collection cannot run"; exit 1; }
 
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"

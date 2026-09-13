@@ -55,9 +55,9 @@ flowchart TB
         SVC["social-collect.service<br/>enqueue 'daily'"]
         POLL["social-collect-poll.sh<br/>(poller: timer + UI runs)"]
         WD["social-collect-watchdog.sh<br/>probe ingest canary · run collectors"]
-        COL["collect.ts → claude -p (orchestrator)"]
+        COL["collect.ts → local summarize loop"]
         SCAN["claude-sessions.js<br/>new/changed transcripts → manifest"]
-        SUB["session-summarizer sub-agents<br/>--model haiku · one per session"]
+        SUB["llama.cpp router :1921<br/>one call per session · no Claude"]
         IMP["claude-import.js<br/>validate + batch insert"]
         TAG["claude-tag.js<br/>cross-session tag pass"]
     end
@@ -115,9 +115,11 @@ flowchart TB
 > Highlighted = a `claude` process runs. Note graphify: the **post-commit hook is AST-only, no
 > LLM** (`graphify update` + `global add`) — Claude is *not* called on commit. The LLM backend
 > (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
-> Collection itself is now a model call too: an orchestrating `claude -p` run plus one Haiku
-> sub-agent per session transcript. The other genuine model calls are the in-pod Opus drafter
-> (`/api/generate`) and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox = Haiku).
+> Collection is **no longer** a Claude call: it loops over a local model on the llama.cpp
+> router (`LLM_BASE_URL`), so the box needs a GPU rather than a Claude session. The genuine
+> model calls left are the in-pod Opus drafter (`/api/generate`), the cross-session tag pass
+> (`collect:tag`, run by hand), and the vault-keeper writers (daily/weekly/repo-doc = Opus,
+> inbox = Haiku).
 >
 > **Keeping the graph fresh:** each repo's slice of `global-graph.json` is refreshed on
 > every commit by its AST post-commit hook (`VGH`). The daily `vault-repos` job (`T5`) then
@@ -209,32 +211,58 @@ journalctl --user -t social-collect -n 30            # run logs
 
 ### Collection: what actually runs
 
-`npm run collect` does not parse anything itself. It scans for session transcripts that are
-new or have grown since the last successful import, writes a manifest, and hands the whole
-job to one `claude -p` agent (`prompts/collect-agent.md`):
+`npm run collect` does not parse anything itself, and it no longer spends Claude on this.
+It scans for session transcripts that are new or have grown since the last successful import,
+writes a manifest, and then walks them one at a time against a **local** model:
 
-1. **Fan out** — one `session-summarizer` sub-agent per manifest entry, on Haiku
-   (`.claude/agents/session-summarizer.md`). Each reads its own transcript in full and writes
-   `<work dir>/summaries/<session_id>.json`.
-2. **Self-correct** — each sub-agent runs `dist/summary-validate.js` on its own file. The
-   validator names the offending field and exits nonzero, so the sub-agent fixes and retries
-   rather than shipping something the importer would drop.
-3. **Import** — `dist/claude-import.js` re-validates every file and writes them in ONE batch.
-   A session whose summary is missing or invalid keeps its state entry and comes back on the
-   next run; nothing is silently lost.
-4. **Tag** — the orchestrator reads all the summaries and assigns tags across the whole batch
-   at once, then applies them with `dist/claude-tag.js`. One pass on purpose: a tag is only
-   useful if two sessions about the same thing get the *same* one, which a per-session tagger
-   cannot guarantee.
+1. **Excerpt** — `src/excerpt.ts` renders each transcript deterministically: `attachment`
+   lines, `thinking` blocks and sub-agent sidechains dropped, tool calls kept as one line
+   each, and a 24k-character budget spent tail-first, because the last turns are what was
+   concluded and the first are only what was asked. The same transcript always yields the
+   same bytes, so a bad summary is reproducible.
+2. **Summarize** — `src/summarize.ts` sends it to the llama.cpp router from the `ollama-k3s`
+   repo (`LLM_BASE_URL`, default `http://127.0.0.1:1921/v1`). The collector loads the model
+   before the first session and unloads it after the last — but only if *it* loaded it; a
+   model found already resident belongs to whoever loaded it and is left alone.
+3. **Self-correct** — the reply is checked with the real `validateSummary`, and a rejected
+   one goes back to the model with the validator's own errors as a correction turn, up to
+   `LLM_ATTEMPTS` times. Measured 100% valid on the first attempt over a stratified
+   12-session sample (`bench/`).
+4. **Import in batches** — every `CLAUDE_IMPORT_BATCH` summaries (default 10) are written to
+   the DB and their state entries advanced. A session whose summary is missing or invalid
+   keeps its state entry and comes back on the next run; nothing is silently lost.
+5. **Tag** — *not* part of the run any more. Tagging is a judgement call **across** sessions
+   (a tag is only useful if two sessions about the same thing get the same one), so it stays
+   a Claude job: write `<work dir>/tags.json` and run `npm run collect:tag`.
 
-Why an agent instead of a parser: the old collector took each session's **first prompt** as
-the item — the question, never the answer. The summary is built from the whole transcript, so
-a week's items say what was actually done.
+Why a local model instead of `claude -p` fanning out a sub-agent per session: reading a
+transcript and filling a six-field schema is the mechanical half of the pipeline. Moving it
+off Claude leaves Claude for the half that needs judgement — drafting posts and tagging — and
+buys determinism and a loop with no tool surface for a transcript to inject into.
 
-Cost control lives in `CLAUDE_LOOKBACK_DAYS` and the state file. Steady state is a handful of
-sub-agents a day; a **first run backfills the entire lookback window at once**, so check
-`npm run collect:sessions` before the first run and lower the window if the count surprises
-you.
+Why a summary instead of a parse: the original collector took each session's **first prompt**
+as the item — the question, never the answer. The summary is built from the whole transcript,
+so a week's items say what was actually done.
+
+#### Surviving an interrupted run
+
+A full backlog is ~300 sessions at ~60-70s each, so a first run is **hours**, and it must be
+able to die in the middle. Three things make that cheap:
+
+- `<work dir>/summaries/` is never wiped. Completed summaries outlive the process.
+- `<work dir>/progress.json` records the transcript fingerprint (mtime + size) each summary
+  was written from, written atomically via write-then-rename. On the next run a summary is
+  reused **only** if its session is byte-for-byte unchanged — a session that has since grown
+  is summarized again, because importing the older summary would advance state past the new
+  turns and they would never be summarized at all.
+- State advances every batch, not once at the end. A crash costs at most one batch, and
+  `SIGINT`/`SIGTERM` release the model and commit what is done before exiting.
+
+So the recovery procedure is just: run it again.
+
+Cost control lives in `CLAUDE_LOOKBACK_DAYS`, `CLAUDE_COLLECT_BUDGET_MIN` and the state file.
+The budget is a wall-clock brake, not a deadline: whatever was summarized is imported and the
+rest stay pending, so a nightly timer can chip away at a backlog across several runs.
 
 > The state file (`<work dir>/state.json`) advances only for sessions that actually landed in
 > the DB. Delete it to force a full re-summarize of the window.

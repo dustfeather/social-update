@@ -1,139 +1,45 @@
-import { spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 import { config } from "dotenv";
 import { buildManifest, WORK_DIR } from "./claude-sessions";
 import { importSummaries } from "./claude-import";
+import { readProgress, writeProgress } from "./claude-progress";
+import { summarizeSession } from "./summarize";
+import { loadModel, unloadModel, LLM_MODEL, LLM_BASE } from "./llm";
 
 config({ quiet: true });
 
-// Collection is an agent run, not a parser. The old collector took each session's
-// first prompt as the item — the question, never the answer. Here one orchestrating
-// agent fans out a sub-agent per session, each reads the whole transcript and
-// writes a validated summary, and the orchestrator imports them and assigns tags
-// across the batch. See prompts/collect-agent.md for what it is told to do.
-
-const REPO = path.join(__dirname, "..");
-const PROMPT_PATH = path.join(REPO, "prompts", "collect-agent.md");
-
-// The agent may legitimately run for a long time — a wide fan-out over big
-// transcripts is minutes, not seconds. It must not run forever, though: a wedged
-// run would hold the collector's slot until the next timer fires.
-const TIMEOUT_MS = Number(process.env.CLAUDE_AGENT_TIMEOUT_MIN ?? 45) * 60_000;
-
-// Indent a block so the agent's own output is visibly quoted in the collector log.
-const indent = (s: string, by = "    ") => s.split("\n").map((l) => by + l).join("\n");
-
-export function buildPrompt(count: number): string {
-  return fs
-    .readFileSync(PROMPT_PATH, "utf8")
-    .replaceAll("{{REPO}}", REPO)
-    .replaceAll("{{MANIFEST}}", path.join(WORK_DIR, "manifest.json"))
-    .replaceAll("{{SUMMARY_DIR}}", path.join(WORK_DIR, "summaries"))
-    .replaceAll("{{WORK_DIR}}", WORK_DIR)
-    .replaceAll("{{COUNT}}", String(count));
-}
-
-function runAgent(prompt: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      "claude",
-      [
-        "-p",
-        // WORK_DIR lives outside the repo, and `cwd` below is the only directory
-        // the agent may write to by default — an allowedTools `Write(...)` rule
-        // grants a tool, not a sandbox root, so without this every sub-agent's
-        // write to the summary directory is refused with "may only create
-        // directories in the allowed working directories for this session".
-        "--add-dir",
-        WORK_DIR,
-        // No --permission-mode: the default leaves the allowlist below as the only
-        // thing that grants anything, which is the point. `acceptEdits` auto-approves
-        // every Write and Edit REGARDLESS of the allowlist, so with it set the path
-        // scope on Write is decorative — an earlier run of this collector edited
-        // src/claude.ts while nominally confined to the scratch directory. In print
-        // mode a non-allowlisted tool cannot prompt, so it is simply refused.
-        //
-        // What the run is authorized for is deliberately narrow.
-        //
-        // The sub-agents read session transcripts, and a transcript contains
-        // whatever text ever passed through a session — pasted pages, repo files,
-        // error output. That is untrusted input, so this allowlist is the boundary
-        // that keeps a prompt injection inside it from becoming code execution:
-        //
-        //   - `node` is pinned to the three scripts of this pipeline by full path.
-        //     A bare `Bash(node:*)` would permit `node -e "..."`, which is simply
-        //     "run anything" spelled differently.
-        //   - the reading tools (wc/grep/head/tail) cannot execute, and the agents
-        //     already have Read.
-        //   - no WebFetch/WebSearch: without an outbound channel, anything that did
-        //     get through has nowhere to send what it found.
-        "--allowedTools",
-        [
-          "Task",
-          "Agent",
-          "Read",
-          // Write is scoped to the run's scratch directory. The agents have no
-          // business editing this repository, and an unattended run that edits
-          // source is a surprise waiting to be committed by whoever runs
-          // `git add -A` next.
-          `Write(${WORK_DIR}/**)`,
-          "Glob",
-          "Grep",
-          `Bash(node ${REPO}/dist/summary-validate.js:*)`,
-          `Bash(node ${REPO}/dist/claude-import.js:*)`,
-          `Bash(node ${REPO}/dist/claude-tag.js:*)`,
-          "Bash(wc:*)",
-          "Bash(grep:*)",
-          "Bash(head:*)",
-          "Bash(tail:*)",
-        ].join(","),
-        "--disallowedTools",
-        "WebFetch,WebSearch",
-      ],
-      { cwd: REPO, stdio: ["pipe", "pipe", "pipe"] }
-    );
-
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (d) => (out += d));
-    child.stderr.on("data", (d) => (err += d));
-
-    const timer = setTimeout(() => {
-      child.kill("SIGTERM");
-      reject(new Error(`agent exceeded ${TIMEOUT_MS / 60_000} min — killed`));
-    }, TIMEOUT_MS);
-
-    child.on("error", (e) => {
-      clearTimeout(timer);
-      reject(e);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      // The agent's own words go to the collector log: this is the only place the
-      // run explains itself, and a silent success is indistinguishable from a
-      // silent no-op when something later looks wrong.
-      if (out.trim()) console.log(indent(out.trim(), "  | "));
-      if (code !== 0) return reject(new Error(`claude exited ${code}: ${err.trim().slice(0, 500)}`));
-      resolve();
-    });
-
-    child.stdin.write(prompt);
-    child.stdin.end();
-  });
-}
-
-// Two collectors in the same WORK_DIR destroy each other: buildManifest() wipes
-// summaries/ before it writes, so a run starting at 18:00 deletes the completed
-// summaries of a run that started at 17:29, and both then fan out writing over
-// one manifest and one state file. It happens on its own — the systemd timer
-// fires on a schedule and a manual backfill is exactly the kind of long run it
-// lands in the middle of. The DB's enqueueRun() single-flight does not help:
-// that guards POST /api/collect, and both the timer and a manual run invoke
-// `node dist/collect.js` directly, which never touches it.
+// Collection is a loop over a local model, not an agent run.
 //
-// "wx" is the whole mechanism — create-exclusive is atomic, so the loser of a
-// race gets EEXIST rather than a torn read of somebody's pid.
+// It used to be `claude -p` fanning out one sub-agent per session. That worked, but
+// it spent Claude on the most mechanical half of the pipeline: reading a transcript
+// and filling a six-field schema. A local model does that at 100% valid@1 over a
+// stratified sample, so Claude is now spent only where judgement is actually
+// required — drafting posts, and tagging across the batch once items are in the DB.
+//
+// What the loop gets in exchange for being dumber: it is deterministic, it has no
+// tool surface for a transcript to inject into, and the prompt is one file instead
+// of an orchestrator briefing sub-agents.
+
+// A wall-clock ceiling on the whole run. Overrunning is graceful by construction —
+// every session summarized so far is imported, and the ones never reached keep
+// their state entry and come back next run — so this is a brake, not a deadline.
+// (CLAUDE_AGENT_TIMEOUT_MIN is the old name from the agent era, still honoured.)
+const BUDGET_MS =
+  Number(process.env.CLAUDE_COLLECT_BUDGET_MIN ?? process.env.CLAUDE_AGENT_TIMEOUT_MIN ?? 120) * 60_000;
+
+// Two collectors in the same WORK_DIR destroy each other: they write over one
+// manifest, one progress ledger and one state file, and — with LC_ROUTER_MAX=1 —
+// contend for the single model the router can hold, so the one that finishes first
+// unloads the model out from under the other. It happens on its own: the systemd
+// timer fires on a schedule and a manual backfill is exactly the kind of long run
+// it lands in the middle of.
+// The DB's enqueueRun() single-flight does not help: that guards POST /api/collect,
+// and both the timer and a manual run invoke `node dist/collect.js` directly, which
+// never touches it.
+//
+// "wx" is the whole mechanism — create-exclusive is atomic, so the loser of a race
+// gets EEXIST rather than a torn read of somebody's pid.
 const LOCK_PATH = path.join(WORK_DIR, "collect.lock");
 
 export function acquireLock(): boolean {
@@ -189,6 +95,14 @@ export async function collectClaude(): Promise<number> {
   }
 }
 
+
+// How many summaries to commit at once. Every import advances state.json for the
+// sessions in it, which is what makes them stop being pending — so this is the
+// granularity at which a crash stops costing work. Small enough that a power cut
+// loses minutes, large enough that a 300-session run is not 300 round trips to the
+// cluster's /api/ingest.
+const IMPORT_BATCH = Number(process.env.CLAUDE_IMPORT_BATCH ?? 10);
+
 async function collectClaudeLocked(): Promise<number> {
   const manifest = buildManifest();
   const count = manifest.sessions.length;
@@ -196,28 +110,169 @@ async function collectClaudeLocked(): Promise<number> {
     console.log("[collect] claude: no new or changed sessions since the last run");
     return 0;
   }
-  console.log(`[collect] claude: ${count} session(s) to summarize`);
 
+  const progress = readProgress();
+  const summaryFile = (id: string) => path.join(manifest.summary_dir, `${id}.json`);
+
+  // Can a summary already on disk be trusted for this session?
+  //
+  // Only if it was written from the transcript exactly as it stands now. A session
+  // that has GROWN since would be imported as a summary of the shorter transcript,
+  // and the import would advance state to the NEW fingerprint — so the turns added
+  // since would never be summarized at all.
+  const reusable = (ref: { session_id: string; mtime: string; size: number }): boolean => {
+    if (!fs.existsSync(summaryFile(ref.session_id))) return false;
+    const seen = progress[ref.session_id];
+    if (seen) return seen.mtime === ref.mtime && seen.size === ref.size;
+    // No ledger entry: either a summary from before the ledger existed, or one
+    // written by the `claude -p` agent this loop replaced. It is still good if the
+    // summary file is NEWER than the transcript it describes, which means whoever
+    // wrote it had already seen the session's final content.
+    try {
+      return fs.statSync(summaryFile(ref.session_id)).mtimeMs >= Date.parse(ref.mtime);
+    } catch {
+      return false;
+    }
+  };
+
+  const todo = manifest.sessions.filter((r) => !reusable(r));
+  const resumed = manifest.sessions.filter((r) => reusable(r)).map((r) => r.session_id);
+
+  // Anything in summaries/ that this manifest does not claim is dead: its session
+  // aged out of the lookback window, or was already imported. Nothing wipes the
+  // directory any more, so prune here or it grows without bound.
+  const live = new Set(manifest.sessions.map((r) => r.session_id));
+  let pruned = 0;
+  for (const f of fs.readdirSync(manifest.summary_dir)) {
+    if (!f.endsWith(".json")) continue;
+    const id = f.slice(0, -".json".length);
+    if (live.has(id)) continue;
+    fs.rmSync(path.join(manifest.summary_dir, f), { force: true });
+    delete progress[id];
+    pruned++;
+  }
+  for (const id of Object.keys(progress)) {
+    if (!live.has(id)) delete progress[id];
+  }
+  if (pruned) console.log(`[collect] claude: pruned ${pruned} stale summary file(s)`);
+  writeProgress(progress);
+
+  if (resumed.length) {
+    console.log(`[collect] claude: resuming — ${resumed.length} summary(ies) already on disk and still current`);
+  }
+  console.log(
+    `[collect] claude: ${count} session(s) pending, ${todo.length} to summarize via ${LLM_MODEL} @ ${LLM_BASE}`
+  );
+
+  // Everything summarized but not yet committed. Seeded with the resumed files so a
+  // restart imports them even if the model is never needed again.
+  let batch: string[] = [...resumed];
+  let imported = 0;
+  const flush = async (why: string) => {
+    if (!batch.length) return;
+    const report = await importSummaries(batch);
+    fs.writeFileSync(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
+    for (const bad of report.invalid) {
+      // The validator ran at summarize time too, so a file invalid here was edited
+      // between the two, or the two disagree — either way worth naming.
+      console.error(`[collect] claude: ${bad.file} rejected at import — ${bad.errors.join("; ")}`);
+    }
+    // State has advanced for these; the files are now redundant and the ledger
+    // entries would only keep stale fingerprints alive.
+    for (const id of batch) {
+      fs.rmSync(summaryFile(id), { force: true });
+      delete progress[id];
+    }
+    writeProgress(progress);
+    imported += report.written;
+    console.log(`[collect] claude: committed ${report.written} item(s) (${why})`);
+    batch = [];
+  };
+
+  let ok = 0;
+  let failed = 0;
+  let loadedByUs = false;
+  const release = async () => { await unloadModel(loadedByUs); loadedByUs = false; };
+  const onSignal = (sig: string) => {
+    void (async () => {
+      console.log(`\n[collect] claude: ${sig} — releasing the model and committing what is done`);
+      await release();
+      try { await flush(sig); } catch (e) { console.error(`[collect] claude: final commit failed: ${e}`); }
+      process.exit(130);
+    })();
+  };
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
+
+  const deadline = Date.now() + BUDGET_MS;
   try {
-    await runAgent(buildPrompt(count));
-  } catch (err) {
-    // A killed or crashed agent may still have left good summaries behind.
-    // Salvage them rather than throwing the whole run away — the sessions it
-    // never reached keep their state entry and come back next time.
-    console.error(`[collect] claude: ${err instanceof Error ? err.message : err}`);
-    console.error("[collect] claude: importing whatever summaries landed");
-    const salvaged = await importSummaries();
-    console.log(`[collect] claude: salvaged ${salvaged.written} item(s)`);
-    return salvaged.written;
+    if (todo.length) {
+      // Load up front rather than letting the first session trigger it. A cold load
+      // is seconds to tens of seconds; charged to session one it looks like a
+      // pathologically slow session and sends you reading that transcript for a
+      // reason that is not there.
+      const t0 = Date.now();
+      loadedByUs = await loadModel();
+      console.log(
+        loadedByUs
+          ? `[collect] claude: loaded ${LLM_MODEL} in ${((Date.now() - t0) / 1000).toFixed(1)}s`
+          : `[collect] claude: ${LLM_MODEL} was already resident — leaving it as found on exit`
+      );
+    }
+
+    for (const [i, session] of todo.entries()) {
+      if (Date.now() > deadline) {
+        console.warn(
+          `[collect] claude: ${BUDGET_MS / 60_000} min budget spent after ${i} session(s) — ` +
+          `the remaining ${todo.length - i} stay pending for the next run`
+        );
+        break;
+      }
+
+      const label = `[${String(i + 1).padStart(3)}/${todo.length}] ${session.session_id.slice(0, 8)} ${session.project}`;
+      const result = await summarizeSession(session);
+
+      if (!result.ok) {
+        failed++;
+        console.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
+        continue;
+      }
+
+      // Write the summary, then record the fingerprint it was written from. In that
+      // order: a crash between the two leaves a summary with no ledger entry, which
+      // the mtime check above still recognises. The reverse would leave a ledger
+      // entry promising a file that does not exist.
+      fs.writeFileSync(summaryFile(session.session_id), JSON.stringify(result.summary, null, 2));
+      progress[session.session_id] = {
+        mtime: session.mtime,
+        size: session.size,
+        written_at: new Date().toISOString(),
+      };
+      writeProgress(progress);
+
+      ok++;
+      batch.push(session.session_id);
+      console.log(
+        `[collect] claude: ${label} ok in ${(result.ms / 1000).toFixed(1)}s ` +
+        `(${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`
+      );
+
+      if (batch.length >= IMPORT_BATCH) await flush("batch");
+    }
+  } finally {
+    // Release before the final commit: importing does not need the GPU, and a model
+    // this run loaded holds ~7.9 GiB that nothing else on the box can use meanwhile.
+    // One found already resident is left alone — it is not ours to evict.
+    await release();
+    process.off("SIGINT", onSignal);
+    process.off("SIGTERM", onSignal);
   }
 
-  // The agent runs the import itself; read its report rather than trusting the
-  // final message, which is prose.
-  const reportPath = path.join(WORK_DIR, "import-report.json");
-  try {
-    const report = JSON.parse(fs.readFileSync(reportPath, "utf8")) as { written?: number };
-    return Number(report.written ?? 0);
-  } catch {
-    throw new Error(`agent finished but wrote no import report at ${reportPath}`);
-  }
+  await flush("final");
+  console.log(`[collect] claude: summarized ${ok}, failed ${failed}, imported ${imported}`);
+  // Tagging used to run inside the agent, over the whole batch at once. It is a
+  // judgement call across sessions, not a per-session transform, so it stays a
+  // Claude job: write WORK_DIR/tags.json and run `npm run collect:tag`.
+  if (imported) console.log(`[collect] claude: items are untagged — run collect:tag to tag them`);
+  return imported;
 }

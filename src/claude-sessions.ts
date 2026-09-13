@@ -127,12 +127,18 @@ export interface Manifest {
   sessions: SessionRef[];
 }
 
-// Lay out a clean run directory and describe the work. The summary dir is wiped
-// first: a leftover summary from a previous run would be imported as if it were
-// produced now, and its session's state entry would advance with it.
+// Lay out the run directory and describe the work.
+//
+// The summary dir is NOT wiped. It used to be, because a leftover summary from a
+// previous run would be imported as if it were produced now and would advance its
+// session's state entry with it. That protection now lives in the resume check in
+// claude.ts, which reuses a leftover only when the ledger (claude-progress.ts) says
+// it was written from the transcript exactly as it stands today — and prunes it
+// otherwise. Wiping here instead would throw away every summary a five-hour run
+// completed before it was interrupted, which is the thing that made a power cut
+// cost the whole backlog.
 export function buildManifest(): Manifest {
   const summary_dir = path.join(WORK_DIR, "summaries");
-  fs.rmSync(summary_dir, { recursive: true, force: true });
   fs.mkdirSync(summary_dir, { recursive: true });
   const manifest: Manifest = {
     generated_at: new Date().toISOString(),
