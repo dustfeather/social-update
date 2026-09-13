@@ -6,8 +6,14 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 
 # 1. watchdog + poller scripts onto PATH
-install -D -m 0755 "$repo/scripts/social-collect-watchdog.sh" "$HOME/.local/bin/social-collect-watchdog.sh"
-install -D -m 0755 "$repo/scripts/social-collect-poll.sh"     "$HOME/.local/bin/social-collect-poll.sh"
+# Symlinked, not copied. `install` made ~/.local/bin the real source of truth and the
+# repo a suggestion: editing and committing a script changed nothing until someone
+# remembered to re-run this installer, and nothing reported the drift. Found on
+# 2026-09-13 with the deployed watchdog four weeks behind the repo — still probing for
+# the `claude` CLI the collector had stopped using. A symlink cannot drift.
+mkdir -p "$HOME/.local/bin"
+ln -sfn "$repo/scripts/social-collect-watchdog.sh" "$HOME/.local/bin/social-collect-watchdog.sh"
+ln -sfn "$repo/scripts/social-collect-poll.sh"     "$HOME/.local/bin/social-collect-poll.sh"
 
 # 2. systemd --user units. The daily timer enqueues a run; the poll timer claims it
 #    and runs the collectors (single execution path).

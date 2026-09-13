@@ -160,9 +160,33 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 ## Usage
 
 ```bash
-npm run collect    # one collection run (spawns the agent) → upserts into the DB
-npm start          # serve API + web UI at http://localhost:$PORT
+scripts/social-collect-watchdog.sh   # one collection run, the way the timer runs it
+npm start                            # serve API + web UI at http://localhost:$PORT
 ```
+
+**Prefer the watchdog over `npm run collect` for a real run.** It is the same entry
+point `social-collect.service` uses, so a run that works by hand works on the timer.
+Before starting the collector it probes the two things whose absence is otherwise
+invisible — the llama.cpp router and `$INGEST_URL/api/health` — and afterwards it
+turns a per-source failure into a nonzero exit, because `collect.ts` catches those
+and would otherwise exit 0 having written nothing. A run with no new sessions and a
+run against a dead router look identical in the log without it.
+
+`npm run collect` remains the thin path: same collector, no probes. Both compile
+first — `precollect` runs `tsc` — so neither can silently execute a stale `dist/`.
+
+For the full backlog (~315 sessions, ~90s each, so ~8h) run it detached and let the
+budget do the stopping:
+
+```bash
+nohup scripts/social-collect-watchdog.sh > /tmp/collect-$(date +%F).log 2>&1 &
+tail -f /tmp/collect-$(date +%F).log
+```
+
+`CLAUDE_COLLECT_BUDGET_MIN` (`.env`, 600) caps the wall clock. Hitting it is not a
+failure: the run commits its finished summaries and exits 0, and the next run picks
+up where it stopped. The daily timer run is unaffected — with nothing new to do it
+exits in seconds.
 
 The individual steps, for debugging a run by hand:
 
