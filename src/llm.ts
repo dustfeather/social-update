@@ -28,7 +28,8 @@ const MAX_TOKENS = Number(process.env.LLM_MAX_TOKENS ?? 1200);
 // not need it, and on a 150-session backlog a thought per session is the dominant
 // cost of the run — so it is off unless something asks for it.
 const THINK = process.env.LLM_THINK === "1";
-// A wedged request must not hold the collector's slot until the next timer fires.
+// A slow request must not hold the collector's slot until the next timer fires.
+// This only works because the request is STREAMED — see the note on chat().
 const REQUEST_TIMEOUT_MS = Number(process.env.LLM_REQUEST_TIMEOUT_S ?? 300) * 1000;
 const LOAD_TIMEOUT_MS = Number(process.env.LLM_LOAD_TIMEOUT_S ?? 300) * 1000;
 
@@ -42,6 +43,58 @@ export interface ChatReply {
   ms: number;
   promptTokens: number;
   outputTokens: number;
+}
+
+interface StreamResult {
+  text: string;
+  finishReason: string | null;
+  usage: { prompt_tokens?: number; completion_tokens?: number };
+}
+
+/**
+ * Collect an SSE completion into the same shape the non-streamed reply had.
+ *
+ * Every callers wants the finished text, so this hides the streaming again —
+ * the streaming is there for cancellation, not for progressive output.
+ */
+async function readStream(res: Response): Promise<StreamResult> {
+  if (!res.body) throw new Error("streamed response had no body");
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let text = "";
+  let finishReason: string | null = null;
+  let usage: StreamResult["usage"] = {};
+
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    // SSE frames are separated by a blank line; a frame can arrive split across
+    // reads, so only whole ones are consumed and the remainder stays buffered.
+    let cut: number;
+    while ((cut = buf.indexOf("\n\n")) !== -1) {
+      const frame = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      for (const line of frame.split("\n")) {
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        let chunk: any;
+        try {
+          chunk = JSON.parse(payload);
+        } catch {
+          continue; // a frame that is not JSON is not ours to interpret
+        }
+        const choice = chunk.choices?.[0];
+        if (choice?.delta?.content) text += choice.delta.content;
+        if (choice?.finish_reason) finishReason = choice.finish_reason;
+        // The usage frame arrives last and carries no choices.
+        if (chunk.usage) usage = chunk.usage;
+      }
+    }
+  }
+  return { text, finishReason, usage };
 }
 
 /** `maxTokens` overrides the default completion budget for one call. The tagging
@@ -62,16 +115,27 @@ export async function chat(
       messages,
       temperature: TEMP,
       max_tokens: maxTokens,
-      stream: false,
+      // STREAMED, and not for the UI — nothing here renders a token as it lands.
+      // It is what makes the timeout above mean anything. AbortSignal closes the
+      // socket; it does not cancel work on the server. On a NON-streamed request
+      // llama-server does not touch the socket until the whole completion is
+      // ready, so it never learns the caller left and keeps decoding to the token
+      // budget for nobody — minutes of GPU, and the next request now shares the
+      // card with a ghost. With retries on top, one slow chunk leaves three of
+      // them, and a pass degrades chunk over chunk until everything times out.
+      // Streaming writes every token, so the first write after the abort fails and
+      // the slot is released.
+      stream: true,
+      stream_options: { include_usage: true },
       chat_template_kwargs: { enable_thinking: THINK },
     }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) throw new Error(`${res.status} ${(await res.text()).slice(0, 300)}`);
 
-  const body = (await res.json()) as any;
-  const choice = body.choices?.[0] ?? {};
-  const text: string = choice.message?.content ?? "";
+  const { text, finishReason, usage } = await readStream(res);
+  const body = { usage };
+  const choice = { finish_reason: finishReason };
 
   // A thinking model that spends its whole completion budget on the thought returns
   // content="" with finish_reason="length" — an empty string, never an error.
