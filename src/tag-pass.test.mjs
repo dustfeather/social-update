@@ -93,3 +93,56 @@ test("a non-object reply reports only the structural error", () => {
   assert.equal(errs.length, 1);
   assert.match(errs[0], /must be a JSON object/);
 });
+
+// --- incremental commit ---------------------------------------------------
+// assignTags hands each chunk to onChunk as soon as it validates. This is the
+// only thing standing between a killed backfill and losing every chunk it had
+// already paid the GPU for, and nothing upstream would notice if it stopped
+// firing — the run would still log "tagged N session(s)" per chunk.
+const llm = require("../dist/llm.js");
+const { assignTags } = require("../dist/tag-pass.js");
+
+/** Replace chat() with a canned reply per call, restoring it afterwards. */
+function withChat(replies, fn) {
+  const real = llm.chat;
+  let i = 0;
+  llm.chat = async () => ({ text: replies[i++], ms: 1, outputTokens: 1 });
+  return fn().finally(() => {
+    llm.chat = real;
+  });
+}
+
+const reply = (ids) => JSON.stringify(Object.fromEntries(ids.map((id) => [id, ["k3s"]])));
+
+test("each chunk is committed before the next one starts", async () => {
+  // 30 items at the default batch of 25 = two chunks. The point of the test is
+  // that the first chunk is already committed while the second is still being
+  // generated, which is what a killed run gets to keep.
+  const items = Array.from({ length: 30 }, (_, i) => candidate(`s${i}`));
+  const first = items.slice(0, 25).map((c) => c.session_id);
+  const second = items.slice(25).map((c) => c.session_id);
+  const seen = [];
+  const result = await withChat([reply(first), reply(second)], () =>
+    assignTags(items, () => {}, async (chunk) => {
+      seen.push(Object.keys(chunk));
+    })
+  );
+  assert.equal(seen.length, 2);
+  assert.deepEqual(seen[0], first);
+  assert.deepEqual(seen[1], second);
+  assert.equal(Object.keys(result.tags).length, 30);
+});
+
+test("a commit that throws is recorded, not fatal", async () => {
+  const items = [candidate("a")];
+  const result = await withChat([reply(["a"])], () =>
+    assignTags(items, () => {}, async () => {
+      throw new Error("tags POST 503");
+    })
+  );
+  // The tags still come back, so the caller's end-of-run retry can store them.
+  assert.deepEqual(result.tags, { a: ["k3s"] });
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.errors.length, 1);
+  assert.match(result.errors[0], /could not be committed .*503/);
+});

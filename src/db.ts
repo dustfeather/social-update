@@ -158,19 +158,28 @@ export function getWeekItems(week: string): Array<{
 // yet"; "[]" is a tag set that was deliberately left empty and is not reopened
 // here. Used by the backfill — the in-run pass works from the summaries it just
 // produced and never needs to ask the DB.
+// Two statements rather than one with `(@week IS NULL OR iso_week = @week)`:
+// SQLite will not use the iso_week index through that disjunction, so the
+// unfiltered case would degrade to a scan to keep the filtered one convenient.
 const untaggedStmt = db.prepare(
   `SELECT external_id, title, body, tags
      FROM items
     WHERE source = ? AND tags IS NULL
     ORDER BY occurred_at DESC`
 );
-export function getUntaggedItems(source: string): Array<{
+const untaggedWeekStmt = db.prepare(
+  `SELECT external_id, title, body, tags
+     FROM items
+    WHERE source = ? AND iso_week = ? AND tags IS NULL
+    ORDER BY occurred_at DESC`
+);
+export function getUntaggedItems(source: string, week?: string): Array<{
   external_id: string | null;
   title: string | null;
   body: string | null;
   tags: string | null;
 }> {
-  return untaggedStmt.all(source) as any;
+  return (week ? untaggedWeekStmt.all(source, week) : untaggedStmt.all(source)) as any;
 }
 
 // Toggle a single item's ignored flag. Returns true if a row was updated.

@@ -20,7 +20,13 @@ config({ quiet: true });
 // pass, each chunk shown what the earlier ones chose. Tagging 180 rows in eight
 // separate invocations would produce eight vocabularies.
 //
-//   node dist/tag-backfill.js [--dry-run] [--limit N] [--source claude]
+// Progress is committed chunk by chunk, not once at the end: a pass over a
+// backlog is minutes of GPU per chunk, and one that only wrote after the last
+// chunk threw all of it away when the process was killed partway. A run
+// interrupted now keeps every chunk that finished, and the rows it already
+// tagged are no longer NULL, so a re-run picks up where it stopped.
+//
+//   node dist/tag-backfill.js [--dry-run] [--limit N] [--source claude] [--week 2026-W37]
 
 const args = process.argv.slice(2);
 const flag = (name: string): string | undefined => {
@@ -30,33 +36,56 @@ const flag = (name: string): string | undefined => {
 const DRY = args.includes("--dry-run");
 const LIMIT = Number(flag("--limit") ?? 0);
 const SOURCE = flag("--source") ?? "claude";
+// One week at a time is the normal way to run this. The vocabulary is shared
+// across whatever the pass is given, so a week tagged alone gets a vocabulary
+// built from that week rather than from the whole backlog.
+const WEEK = flag("--week");
 
 async function main(): Promise<number> {
-  const all = await fetchUntagged(SOURCE);
+  const all = await fetchUntagged(SOURCE, WEEK);
   const candidates = LIMIT > 0 ? all.slice(0, LIMIT) : all;
+  const scope = WEEK ? `source "${SOURCE}" in ${WEEK}` : `source "${SOURCE}"`;
   if (!candidates.length) {
-    console.log(`[backfill] nothing untagged for source "${SOURCE}"`);
+    console.log(`[backfill] nothing untagged for ${scope}`);
     return 0;
   }
   console.log(
-    `[backfill] ${all.length} untagged item(s)` +
+    `[backfill] ${all.length} untagged item(s) for ${scope}` +
     (candidates.length < all.length ? `, tagging the first ${candidates.length}` : "") +
     ` via ${LLM_MODEL}`
   );
+
+  const file = path.join(WORK_DIR, "tags-backfill.json");
+  const done: Record<string, string[]> = {};
+  let updated = 0;
+
+  // Each chunk lands as it validates. The DB write comes FIRST and `done` is only
+  // marked once it returns: a chunk recorded as done before it stored would be
+  // skipped by the retry at the end, which is the one thing this must not do.
+  // The JSON file is rewritten alongside it, so a killed run still leaves the
+  // tags it generated on disk.
+  const commit = async (chunk: Record<string, string[]>): Promise<void> => {
+    if (!DRY) updated += await applyTags(SOURCE, chunk);
+    Object.assign(done, chunk);
+    replaceFileDurable(file, JSON.stringify(done, null, 2));
+    if (!DRY) console.log(`[backfill] committed ${updated}/${Object.keys(done).length} tagged item(s) so far`);
+  };
 
   let loadedByUs = false;
   let result;
   try {
     loadedByUs = await loadModel();
-    result = await assignTags(candidates, (line) => console.log(line.replace("[collect] claude:", "[backfill]")));
+    result = await assignTags(
+      candidates,
+      (line) => console.log(line.replace("[collect] claude:", "[backfill]")),
+      commit
+    );
   } finally {
-    // Release before the POST: writing tags does not need the GPU, and the child
-    // holds ~7.9 GiB that nothing else on the box can use meanwhile.
+    // Release as soon as the pass is over: writing tags does not need the GPU,
+    // and the child holds ~7.9 GiB that nothing else on the box can use meanwhile.
     await unloadModel(loadedByUs);
   }
 
-  const file = path.join(WORK_DIR, "tags-backfill.json");
-  replaceFileDurable(file, JSON.stringify(result.tags, null, 2));
   const asked = Object.keys(result.tags).length;
 
   if (DRY) {
@@ -65,10 +94,14 @@ async function main(): Promise<number> {
     return result.failed.length ? 1 : 0;
   }
 
-  const updated = await applyTags(SOURCE, result.tags);
+  // A retry of whatever a per-chunk commit failed to store. Everything that did
+  // land is already tagged, so this is a no-op write in the normal case.
+  const missed = Object.fromEntries(Object.entries(result.tags).filter(([id]) => !(id in done)));
+  if (Object.keys(missed).length) updated += await applyTags(SOURCE, missed);
+
   replaceFileDurable(
     path.join(WORK_DIR, "tag-backfill-report.json"),
-    JSON.stringify({ asked, updated, untagged: result.failed, errors: result.errors }, null, 2)
+    JSON.stringify({ week: WEEK ?? null, asked, updated, untagged: result.failed, errors: result.errors }, null, 2)
   );
   console.log(`[backfill] tagged ${updated}/${asked} item(s)`);
   if (result.failed.length) {

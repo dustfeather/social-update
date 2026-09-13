@@ -173,10 +173,17 @@ export function checkTagReply(parsed: unknown, ids: string[]): string[] {
  * A chunk that never validates loses only its own sessions: they come back with no
  * tags, which is the same state they were already in, and the run continues. The
  * pass is the last thing a collection does and it must not be able to fail one.
+ *
+ * `onChunk` receives each chunk's tags as soon as they validate, which is how a
+ * caller persists progress incrementally. It is awaited so the next chunk does not
+ * start on top of a half-finished write, and its failure is recorded rather than
+ * thrown — a chunk that generated fine but could not be stored is still in the
+ * returned tags, and the caller's final write can pick it up.
  */
 export async function assignTags(
   items: TagCandidate[],
-  log: (line: string) => void = console.log
+  log: (line: string) => void = console.log,
+  onChunk?: (tags: Record<string, string[]>) => Promise<void>
 ): Promise<TagPassResult> {
   const tags: Record<string, string[]> = {};
   const failed: string[] = [];
@@ -227,6 +234,18 @@ export async function assignTags(
     if (assigned) {
       Object.assign(tags, assigned);
       log(`[collect] claude: tagged ${ids.length} session(s) (chunk ${i + 1}/${chunks.length})`);
+      if (onChunk) {
+        // Commit this chunk before starting the next one. A long pass is minutes
+        // of GPU per chunk, and one that only persisted at the end threw all of
+        // it away when the process was killed partway.
+        try {
+          await onChunk(assigned);
+        } catch (e) {
+          const why = `chunk ${i + 1}/${chunks.length} could not be committed — ${String(e).slice(0, 300)}`;
+          errors.push(why);
+          log(`[collect] claude: ${why}`);
+        }
+      }
     } else {
       failed.push(...ids);
       const why = `chunk ${i + 1}/${chunks.length} failed — ${last[0]}`;

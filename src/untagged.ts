@@ -67,9 +67,16 @@ async function getJson(url: URL): Promise<any> {
 // already deployed, at one request per 200 items.
 const PAGE = 200;
 
-export async function fetchUntagged(source: string): Promise<TagCandidate[]> {
+/** `week` narrows to one ISO week ("2026-W37"); omitted, it walks the whole
+ *  backlog. Narrow deliberately: the vocabulary is shared across whatever the
+ *  pass is given, so a week tagged on its own gets a vocabulary of its own. */
+export async function fetchUntagged(source: string, week?: string): Promise<TagCandidate[]> {
   if (INGEST_URL) {
-    const weeks = (await getJson(new URL("/api/weeks", INGEST_URL))) as Array<{ week: string }>;
+    // /api/weeks rather than trusting the argument: a week with no items is a
+    // typo worth reporting, not an empty pass that looks like "nothing untagged".
+    const all = (await getJson(new URL("/api/weeks", INGEST_URL))) as Array<{ week: string }>;
+    const weeks = week ? all.filter((w) => w.week === week) : all;
+    if (week && !weeks.length) throw new Error(`no week "${week}" — /api/weeks knows ${all.length} week(s)`);
     const out: TagCandidate[] = [];
     for (const { week } of weeks) {
       for (let page = 1; ; page++) {
@@ -86,7 +93,7 @@ export async function fetchUntagged(source: string): Promise<TagCandidate[]> {
   }
 
   const { getUntaggedItems } = require("./db") as typeof import("./db");
-  return getUntaggedItems(source)
+  return getUntaggedItems(source, week)
     .map(candidateFromRow)
     .filter((c): c is TagCandidate => c !== null);
 }
