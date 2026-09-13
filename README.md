@@ -176,18 +176,42 @@ run against a dead router look identical in the log without it.
 `npm run collect` remains the thin path: same collector, no probes. Both compile
 first — `precollect` runs `tsc` — so neither can silently execute a stale `dist/`.
 
-For the full backlog (~315 sessions, ~90s each, so ~8h) run it detached and let the
-budget do the stopping:
+For a full backlog run it detached and let the budget do the stopping:
 
 ```bash
 nohup scripts/social-collect-watchdog.sh > /tmp/collect-$(date +%F).log 2>&1 &
 tail -f /tmp/collect-$(date +%F).log
 ```
 
+Ctrl-C on the `tail` detaches from the log, not from the run.
+
+Size it from the scan rather than from a remembered figure — the two filters that
+decide it (`CLAUDE_LOOKBACK_DAYS` and the `sdk-*` exclusion) both move the count a
+lot. `npm run collect:sessions` writes the manifest without summarizing anything, so
+`jq '.sessions | length' ~/.cache/social-update/claude/manifest.json` x ~90s is the
+estimate. As of 2026-09-13 that is 128 sessions, about 3.2h — it was 328 and ~8.2h
+before programmatic transcripts were excluded.
+
 `CLAUDE_COLLECT_BUDGET_MIN` (`.env`, 600) caps the wall clock. Hitting it is not a
 failure: the run commits its finished summaries and exits 0, and the next run picks
 up where it stopped. The daily timer run is unaffected — with nothing new to do it
 exits in seconds.
+
+To stop a run early, signal it — never `kill -9`:
+
+```bash
+kill -TERM "$(ps -o pid=,args= -C node | awk '/collect\.js/ {print $1}')"
+```
+
+SIGTERM commits the summaries already finished, releases the lock and unloads the
+model it loaded. `kill -9` skips all three: the model stays resident holding VRAM no
+later run will reclaim (each one correctly refuses to evict a model it did not
+load), and a lock file survives whose holder is gone. Either way the next run
+resumes from `progress.json` — see *Surviving an interrupted run* below.
+
+Matching on `-C node` plus the script name rather than a bare pattern search is
+deliberate: a pattern-matching process killer also matches the shell you typed it
+in, whose own argv contains the pattern.
 
 The individual steps, for debugging a run by hand:
 
