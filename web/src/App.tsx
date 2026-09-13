@@ -152,20 +152,28 @@ export default function App() {
   // keystroke, and a PUT per character would be absurd. The timer is keyed to
   // the whole array so a change to any card restarts the same 800ms window.
   const pendingSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const latest = useRef<Draft[]>([]);
   function editDraft(index: number, next: Draft) {
+    // The updater is PURE. It used to schedule the save and call setSaveState
+    // from inside here, which React is free to run twice (StrictMode) or during
+    // another component's render: that double-schedules the debounce and makes
+    // the state update a setState-during-render, on the one path that runs for
+    // every single keystroke in the editor.
     setDrafts((prev) => {
       const copy = prev.map((d, i) => (i === index ? next : d));
-      if (draftId !== null) {
-        if (pendingSave.current) clearTimeout(pendingSave.current);
-        setSaveState("saving");
-        pendingSave.current = setTimeout(() => {
-          saveDrafts(draftId, copy)
-            .then(() => setSaveState("saved"))
-            .catch(() => setSaveState("error"));
-        }, 800);
-      }
+      latest.current = copy;
       return copy;
     });
+    if (draftId === null) return;
+    if (pendingSave.current) clearTimeout(pendingSave.current);
+    setSaveState("saving");
+    pendingSave.current = setTimeout(() => {
+      // latest.current, not a copy captured here: the timer fires once for a
+      // burst of keystrokes and must save the last of them, not the first.
+      saveDrafts(draftId, latest.current)
+        .then(() => setSaveState("saved"))
+        .catch(() => setSaveState("error"));
+    }, 800);
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
