@@ -65,14 +65,32 @@ should_defer() {
 
   local router="${LLM_BASE_URL:-http://127.0.0.1:1921/v1}"
   router="${router%/v1}"
-  local models slots
+  # slots stays EMPTY when the model is unloaded and the probe below is skipped. It is
+  # initialised here rather than merely declared because this script runs under `set -u`:
+  # a bare `local slots` leaves it unbound, and the `[ -n "$slots" ]` test then aborts the
+  # whole poller — which fails CLOSED, claiming nothing, ever, with only an "unbound
+  # variable" line in the journal to say so.
+  local models slots=""
   models="$(curl -fsS -m 5 "$router/models" 2>/dev/null)"
-  # /slots must be asked through the router WITH ?model=, which is how it finds the child
-  # to proxy to; bare /slots is a 400 ("model name is missing from the request"). Reading
-  # the child's own port out of the argv the router reports does NOT work — /models carries
-  # both the requested port and the real one ("--port","0" and "--port","52180"), and
-  # nothing in the JSON says which is which.
-  slots="$(curl -fsS -m 5 "$router/slots?model=${LLM_MODEL:-qwen3.6-35b-a3b}" 2>/dev/null)"
+
+  # ONLY ask about slots when /models already says the model is loaded, and never the
+  # other way round. `/slots?model=` is a REQUEST FOR THAT MODEL: on an unloaded one the
+  # router spawns the child to serve it, which takes ~10s and pins ~7.9 GiB. Polling it
+  # every few seconds made this guard the thing holding the card it exists to keep free —
+  # measured 2026-09-14: unloaded and idle at 567 MiB, one /slots call later, loaded at
+  # 7912 MiB. /models is the router's own state and spawns nothing, so it is safe to poll.
+  #
+  # Nothing needs asking when the model is unloaded anyway: nothing can be generating on a
+  # model that is not resident, so the only question left is test 4, whether some other
+  # application has the memory.
+  if printf '%s' "$models" | grep -q "\"value\":\"loaded\""; then
+    # /slots must be asked through the router WITH ?model=, which is how it finds the child
+    # to proxy to; bare /slots is a 400 ("model name is missing from the request"). Reading
+    # the child's own port out of the argv the router reports does NOT work — /models carries
+    # both the requested port and the real one ("--port","0" and "--port","52180"), and
+    # nothing in the JSON says which is which.
+    slots="$(curl -fsS -m 5 "$router/slots?model=${LLM_MODEL:-qwen3.6-35b-a3b}" 2>/dev/null)"
+  fi
 
   if [ -n "$slots" ]; then
     # 2. The model is generating for SOMEONE — a job outside this repo, another session,
