@@ -210,10 +210,6 @@ button:disabled {
   margin: 0;
   overflow-wrap: anywhere;
 }
-.item-id {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-}
-
 .pager {
   display: flex;
   align-items: center;

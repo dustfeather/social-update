@@ -46,44 +46,27 @@ function ItemDetail({ item }: { item: Item }) {
       ) : (
         <p className="item-body item-body-empty">No summary stored for this item.</p>
       )}
-      <dl className="item-meta">
-        <dt>Source</dt>
-        <dd>{item.source}</dd>
-        {item.external_id && (
-          <>
-            <dt>Session</dt>
-            <dd className="item-id">{item.external_id}</dd>
-          </>
-        )}
-        {item.occurred_at && (
-          <>
-            <dt>Occurred</dt>
-            <dd>{item.occurred_at.replace("T", " ").slice(0, 16)}</dd>
-          </>
-        )}
-        {item.collected_at && (
-          <>
-            <dt>Collected</dt>
-            <dd>{item.collected_at.replace("T", " ").slice(0, 16)}</dd>
-          </>
-        )}
-        {item.url && (
-          <>
-            <dt>Link</dt>
-            <dd>
-              {href ? (
-                <a href={href} target="_blank" rel="noreferrer">
-                  {item.url}
-                </a>
-              ) : (
-                <span className="item-url-refused" title="Refused: not an http(s) or mailto URL">
-                  {item.url}
-                </span>
-              )}
-            </dd>
-          </>
-        )}
-      </dl>
+      {/* Source, session id and the two timestamps used to sit here. They are
+          provenance, not content: the same four values on every row of a list that
+          is already grouped by week, pushing the summary — the only thing anyone
+          reads — above the fold. They are still on the item and still in the DB;
+          the API returns them and `GET /api/items` is how you look one up. */}
+      {item.url && (
+        <dl className="item-meta">
+          <dt>Link</dt>
+          <dd>
+            {href ? (
+              <a href={href} target="_blank" rel="noreferrer">
+                {item.url}
+              </a>
+            ) : (
+              <span className="item-url-refused" title="Refused: not an http(s) or mailto URL">
+                {item.url}
+              </span>
+            )}
+          </dd>
+        </dl>
+      )}
     </div>
   );
 }
