@@ -1,6 +1,9 @@
 {
   "compilerOptions": {
     "target": "ES2022",
+    // `precollect`/`prestart` run tsc before every run; incremental keeps that
+    // under a second instead of a full 3s rebuild each time.
+    "incremental": true,
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "lib": ["ES2022"],

@@ -42,7 +42,11 @@ if ! curl -fsS -m 10 -o /dev/null "$INGEST/api/health"; then
 fi
 
 # 2. run the collector, surface its output to journald
-out="$(node dist/collect.js 2>&1)"; rc=$?
+#    Through `npm run` rather than `node dist/collect.js`: the `precollect` hook
+#    compiles first, so a src/ change that was never built by hand cannot leave
+#    this unit silently running the previous build. dist/ is gitignored, so there
+#    is no committed artifact to fall back on.
+out="$(npm run --silent collect 2>&1)"; rc=$?
 echo "$out"
 if [ "$rc" -ne 0 ]; then echo "ERROR: collector exited $rc"; exit "$rc"; fi
 
