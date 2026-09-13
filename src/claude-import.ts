@@ -2,6 +2,7 @@ import fs from "fs";
 import path from "path";
 import { insertItems } from "./sink";
 import { validateFile, SUMMARY_MAX, TITLE_MAX, type SessionSummary } from "./summary";
+import { replaceFileDurable } from "./durable";
 import { WORK_DIR, readState, writeState, type Manifest } from "./claude-sessions";
 import type { ItemInput } from "./db";
 
@@ -98,7 +99,7 @@ if (require.main === module) {
     (report) => {
       // Persist it too: the collector reads this file rather than trusting the
       // orchestrating agent's final message, which is prose and can be anything.
-      fs.writeFileSync(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
+      replaceFileDurable(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
       console.log(JSON.stringify(report, null, 2));
       // Invalid files are a real failure — the orchestrator should see a nonzero
       // exit and say so rather than reporting a clean run that dropped sessions.

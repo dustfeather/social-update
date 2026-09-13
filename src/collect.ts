@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { replaceFileDurable } from "./durable";
 import { collectClaude } from "./claude";
 import { WORK_DIR } from "./claude-sessions";
 

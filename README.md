@@ -217,7 +217,7 @@ SIGTERM commits the summaries already finished, releases the lock and unloads th
 model it loaded. `kill -9` skips all three: the model stays resident holding VRAM no
 later run will reclaim (each one correctly refuses to evict a model it did not
 load), and a lock file survives whose holder is gone. Either way the next run
-resumes from `progress.json` — see *Surviving an interrupted run* below.
+resumes from `progress.jsonl` — see *Surviving an interrupted run* below.
 
 Matching on `-C node` plus the script name rather than a bare pattern search is
 deliberate: a pattern-matching process killer also matches the shell you typed it
@@ -305,15 +305,22 @@ so a week's items say what was actually done.
 
 #### Surviving an interrupted run
 
-A full backlog is ~300 sessions at ~60-70s each, so a first run is **hours**, and it must be
+A full backlog is ~130 sessions at ~90s each, so a first run is **hours**, and it must be
 able to die in the middle. Three things make that cheap:
 
 - `<work dir>/summaries/` is never wiped. Completed summaries outlive the process.
-- `<work dir>/progress.json` records the transcript fingerprint (mtime + size) each summary
-  was written from, written atomically via write-then-rename. On the next run a summary is
-  reused **only** if its session is byte-for-byte unchanged — a session that has since grown
-  is summarized again, because importing the older summary would advance state past the new
-  turns and they would never be summarized at all.
+- `<work dir>/progress.jsonl` records the transcript fingerprint (mtime + size) each summary
+  was written from. On the next run a summary is reused **only** if its session is
+  byte-for-byte unchanged — a session that has since grown is summarized again, because
+  importing the older summary would advance state past the new turns and they would never
+  be summarized at all.
+- Both that ledger line and the summary file itself are **flushed to the disk** as each
+  session finishes, and the ledger is **append-only**: one line added per session, nothing
+  already in the file rewritten. A crash while writing can therefore cost the record being
+  written and nothing else — the reader drops an unparseable last line and keeps the rest.
+  (A single JSON document rewritten per session had the opposite property: every completed
+  session was re-serialized to record the next one, so one bad write put all of them at
+  risk.) The ledger is collapsed back to one line per session once per run, at startup.
 - State advances every batch, not once at the end. A crash costs at most one batch, and
   `SIGINT`/`SIGTERM` release the model and commit what is done before exiting.
 

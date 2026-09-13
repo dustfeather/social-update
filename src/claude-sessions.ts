@@ -1,5 +1,6 @@
 import fs from "fs";
 import path from "path";
+import { replaceFileDurable } from "./durable";
 import os from "os";
 import { config } from "dotenv";
 import { expandHome } from "./paths";
@@ -86,9 +87,11 @@ export function readState(): State {
   }
 }
 
+// The cursor every future run reads. Replaced whole because it IS one value, not
+// an accumulation — but flushed, since losing it means re-summarizing work that
+// was already imported.
 export function writeState(state: State): void {
-  fs.mkdirSync(WORK_DIR, { recursive: true });
-  fs.writeFileSync(statePath(), JSON.stringify(state, null, 2));
+  replaceFileDurable(statePath(), JSON.stringify(state, null, 2));
 }
 
 // The cwd recorded on session entries is the honest project name; the directory
@@ -190,7 +193,7 @@ export function buildManifest(): Manifest {
     summary_dir,
     sessions: pendingSessions(),
   };
-  fs.writeFileSync(path.join(WORK_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
+  replaceFileDurable(path.join(WORK_DIR, "manifest.json"), JSON.stringify(manifest, null, 2));
   return manifest;
 }
 

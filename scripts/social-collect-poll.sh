@@ -41,7 +41,7 @@ echo "claimed run $id — running collector"
 # Output is streamed to a file rather than held in a variable: a multi-hour run
 # accumulates megabytes that only exist in this shell's memory until it exits, so a
 # power cut takes the whole log with it. (The RUN survives either way — the durable
-# state is progress.json and the summaries on disk — but the log is what tells you
+# state is progress.jsonl and the summaries on disk — but the log is what tells you
 # how far it got, and that is exactly what you want after an unclean stop.)
 log="$HOME/.cache/social-update/claude/last-run.log"
 mkdir -p "$(dirname "$log")"

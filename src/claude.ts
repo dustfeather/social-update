@@ -3,8 +3,9 @@ import path from "path";
 import { config } from "dotenv";
 import { buildManifest, WORK_DIR } from "./claude-sessions";
 import { createProgress } from "./progress-bar";
+import { writeFileDurable, replaceFileDurable } from "./durable";
 import { importSummaries } from "./claude-import";
-import { readProgress, writeProgress } from "./claude-progress";
+import { readProgress, recordProgress, forgetProgress, compactProgress } from "./claude-progress";
 import { summarizeSession } from "./summarize";
 import { loadModel, unloadModel, LLM_MODEL, LLM_BASE } from "./llm";
 
@@ -167,7 +168,10 @@ async function collectClaudeLocked(): Promise<number> {
     if (!live.has(id)) delete progress[id];
   }
   if (pruned) console.log(`[collect] claude: pruned ${pruned} stale summary file(s)`);
-  writeProgress(progress);
+  // The one place the whole ledger is rewritten: everything above has just read it
+  // and dropped what is dead, so this is the only moment the in-memory map is the
+  // complete truth. Every write after this point appends a single line.
+  compactProgress(progress);
 
   if (resumed.length) {
     console.log(`[collect] claude: resuming — ${resumed.length} summary(ies) already on disk and still current`);
@@ -187,7 +191,7 @@ async function collectClaudeLocked(): Promise<number> {
   const flush = async (why: string) => {
     if (!batch.length) return;
     const report = await importSummaries(batch);
-    fs.writeFileSync(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
+    replaceFileDurable(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
     for (const bad of report.invalid) {
       // The validator ran at summarize time too, so a file invalid here was edited
       // between the two, or the two disagree — either way worth naming.
@@ -198,8 +202,8 @@ async function collectClaudeLocked(): Promise<number> {
     for (const id of batch) {
       fs.rmSync(summaryFile(id), { force: true });
       delete progress[id];
+      forgetProgress(id);
     }
-    writeProgress(progress);
     imported += report.written;
     console.log(`[collect] claude: committed ${report.written} item(s) (${why})`);
     batch = [];
@@ -275,13 +279,16 @@ async function collectClaudeLocked(): Promise<number> {
       // order: a crash between the two leaves a summary with no ledger entry, which
       // the mtime check above still recognises. The reverse would leave a ledger
       // entry promising a file that does not exist.
-      fs.writeFileSync(summaryFile(session.session_id), JSON.stringify(result.summary, null, 2));
-      progress[session.session_id] = {
+      // Both writes are flushed to the disk before the loop moves on. An hour of
+      // summaries sitting in the page cache is an hour of work a power cut takes.
+      writeFileDurable(summaryFile(session.session_id), JSON.stringify(result.summary, null, 2));
+      const entry = {
         mtime: session.mtime,
         size: session.size,
         written_at: new Date().toISOString(),
       };
-      writeProgress(progress);
+      progress[session.session_id] = entry;
+      recordProgress(session.session_id, entry);
 
       ok++;
       batch.push(session.session_id);
