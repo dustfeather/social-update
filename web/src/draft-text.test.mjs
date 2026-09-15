@@ -471,6 +471,31 @@ test("only an OPENER position counts, which is what keeps the warning quiet", ()
   assert.deepEqual(residualMarkers("a ** b ** c"), []);              // not emphasis, not flagged
 });
 
+test("an empty emphasis pair is reported — nothing flattens it and nothing else sees it", () => {
+  // The toolbar makes this one: Bold with no selection inserts `****` at the caret.
+  // Every emphasis rule needs at least one non-space character inside the run, so it
+  // survives flattening, and the opener scan rejects it because the character after
+  // the run is another marker.
+  assert.equal(flattenMd("a **** b"), "a **** b");
+  assert.deepEqual(residualMarkers("a **** b"), ["**"]);
+  assert.deepEqual(residualMarkers("a ____ b"), ["__"]);
+  assert.deepEqual(residualMarkers("a ~~~~ b"), ["~~"]);
+});
+
+test("an empty pair is four markers, so a bare `**` in prose is still not a warning", () => {
+  // The tempting version of the fix — letting the opener lookahead accept a repeated
+  // marker — matches the first asterisk of `2 ** 3` and turns Python's power operator
+  // into a warning.
+  assert.deepEqual(residualMarkers("2 ** 3"), []);
+  assert.deepEqual(residualMarkers("a ** b"), []);
+});
+
+test("a run of markers alone on a line is a thematic break, not a stray", () => {
+  // CommonMark: three or more is a thematic break, so it is gone before the scan runs.
+  assert.equal(flattenMd("****"), "");
+  assert.deepEqual(residualMarkers("****"), []);
+});
+
 test("markers inside code are not strays — the author cannot fix what is correct", () => {
   // residualMarkers reads the SOURCE, because in flattened text a code span has
   // already been restored verbatim and its markers look identical to unclosed ones.

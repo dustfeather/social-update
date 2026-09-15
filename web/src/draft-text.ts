@@ -365,6 +365,22 @@ export function residualMarkers(md: string): string[] {
   const flat = flattenMd(prose);
   const found = new Set<string>();
   for (const m of flat.matchAll(/(?:^|[\s(])(\*{1,3}|_{1,3}|~{2})(?=[^\s*_~])/g)) found.add(m[1]);
+  // The EMPTY pair, which the scan above cannot see: `****` is an opener followed
+  // immediately by its own closer, so the character after the run is another marker
+  // and the lookahead rejects it. Nothing flattens it either — every emphasis rule
+  // requires `[^*]*[^\s*]`, at least one non-space character inside the run — so it
+  // reaches the composer as four literal asterisks. It is the one a toolbar produces
+  // by accident rather than a typo: Bold with no selection inserts `****` at the
+  // caret.
+  //
+  // Matched as a RUN OF FOUR OR MORE rather than by letting the lookahead accept a
+  // repeated marker, which is the version that looks simpler and is wrong: with
+  // `(?=[^\s*_~]|\1)` the single-`*` alternative matches the first asterisk of
+  // `2 ** 3`, so Python's power operator — and any bare `**` in prose — becomes a
+  // warning. Four is what an empty pair actually costs. On its own line a run of
+  // three or more is a thematic break and correctly flattens to nothing before this
+  // runs, so only the mid-sentence case is left to report.
+  for (const m of flat.matchAll(/(?:^|[\s(])([*_~])\1{3,}(?![*_~])/g)) found.add(m[1].repeat(2));
   return [...found];
 }
 
