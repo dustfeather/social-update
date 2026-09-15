@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -27,6 +27,19 @@ test("a run of emphasis does not span from one word to the next", () => {
 test("snake_case survives — an underscore pair is only emphasis at a word boundary", () => {
   assert.equal(flattenMd("ran collect_lock_test.mjs today"), "ran collect_lock_test.mjs today");
   assert.equal(flattenMd("the _real_ fix"), "the real fix");
+});
+
+test("asterisks used as arithmetic are not emphasis — flanking is required", () => {
+  // This silently DELETED both operators: the first `*` opened, the class ate
+  // " 3 and 4 ", the second closed. prompt.txt promises every number reaches the
+  // post exactly as given, so losing characters is the one failure mode that
+  // matters most here.
+  assert.equal(flattenMd("2 * 3 and 4 * 5"), "2 * 3 and 4 * 5");
+  assert.equal(flattenMd("a ** b ** c"), "a ** b ** c");
+  assert.equal(flattenMd("a ~~ b ~~ c"), "a ~~ b ~~ c");
+  // And the real emphasis it must still strip, so the guard did not turn it off.
+  assert.equal(flattenMd("shipped *the thing* today"), "shipped the thing today");
+  assert.equal(flattenMd("shipped **the thing** today"), "shipped the thing today");
 });
 
 test("an escaped marker becomes the character it was escaping", () => {
@@ -155,6 +168,15 @@ test("a draft that is only a code block keeps its own indentation", () => {
 
 test("prose around a fence is still collapsed and trimmed", () => {
   assert.equal(flattenMd("\n\n# title\n\n\n\nbefore   \n\n```\nx\n```\n\n\n"), "title\n\nbefore\n\nx");
+});
+
+test("a closing fence may be longer than the opening one", () => {
+  // CommonMark allows it, and an author quoting a block that itself contains ```
+  // has to use it. Requiring an exact match read this as unterminated and ate the
+  // rest of the draft as code.
+  assert.equal(flattenMd("before\n\n````\n```\n````\n\nafter"), "before\n\n```\n\nafter");
+  // A tilde tail cannot close a backtick fence.
+  assert.match(flattenMd("a\n\n```\nx\n~~~\n"), /~~~/);
 });
 
 test("an unterminated fence still yields its contents rather than swallowing the rest", () => {
@@ -336,11 +358,11 @@ test("an unbalanced marker survives flattening rather than being guessed at", ()
   // reaches the composer as literal asterisks, and the UI warns instead of
   // repairing it.
   assert.equal(flattenMd("**shipped the collector"), "**shipped the collector");
-  assert.deepEqual(residualMarkers(flattenMd("**shipped the collector")), ["**"]);
+  assert.deepEqual(residualMarkers("**shipped the collector"), ["**"]);
 });
 
 test("a balanced draft has no residual markers", () => {
-  assert.deepEqual(residualMarkers(flattenMd("**shipped** the _collector_")), []);
+  assert.deepEqual(residualMarkers("**shipped** the _collector_"), []);
 });
 
 test("residual markers are reported once each, not per occurrence", () => {
@@ -350,7 +372,64 @@ test("residual markers are reported once each, not per occurrence", () => {
 test("a single asterisk or underscore is not reported — it is ordinary text", () => {
   // `2 * 3` and a lone footnote marker are not broken emphasis, and a warning
   // that fires on them would train the author to ignore it.
-  assert.deepEqual(residualMarkers(flattenMd("2 * 3 = 6, see note *")), []);
+  assert.deepEqual(residualMarkers("2 * 3 = 6, see note *"), []);
+});
+
+test("markers inside code are not strays — the author cannot fix what is correct", () => {
+  // residualMarkers reads the SOURCE, because in flattened text a code span has
+  // already been restored verbatim and its markers look identical to unclosed ones.
+  assert.deepEqual(residualMarkers("call it with `**kwargs` and see"), []);
+  assert.deepEqual(residualMarkers("before\n\n```py\ndef f(**kw): pass\n```\n\nafter"), []);
+  // A real stray elsewhere in the same draft is still caught.
+  assert.deepEqual(residualMarkers("**oops and `**kwargs` here"), ["**"]);
+});
+
+test("an escaped marker is not a stray — it is a character the author asked for", () => {
+  assert.deepEqual(residualMarkers("a literal \\*star\\* and \\_under\\_"), []);
+});
+
+// --- the share decision ------------------------------------------------------
+
+const X = { limit: 280, count: countForX };
+const LINKEDIN = { limit: 3000 };
+const MASTODON = { limit: 500, soft: true };
+const BLUESKY = { limit: 300 };
+const HN = { limit: 80, urlOnly: true };
+
+test("a draft inside every limit disables nothing", () => {
+  const s = shareState(LINKEDIN, "shipped the collector fix", null);
+  assert.deepEqual([s.tooLong, s.noUrl, s.disabled, s.warn], [false, false, false, false]);
+});
+
+test("a hard limit disables the button; a soft one only warns", () => {
+  const long = "x".repeat(600);
+  assert.equal(shareState(BLUESKY, long, null).disabled, true);
+  const m = shareState(MASTODON, long, null);
+  // The instance may well accept it — refusing a post it would have taken is the
+  // worse error, so the button stays live and says why.
+  assert.deepEqual([m.tooLong, m.disabled, m.warn], [true, false, true]);
+});
+
+test("a url-only target is disabled with no url, whatever the length", () => {
+  assert.equal(shareState(HN, "short", null).disabled, true);
+  assert.equal(shareState(HN, "short", "https://x.dev").disabled, false);
+});
+
+test("a url-only target with a url can still be too long", () => {
+  const s = shareState(HN, "x".repeat(200), "https://x.dev");
+  assert.deepEqual([s.tooLong, s.noUrl, s.disabled], [true, false, true]);
+});
+
+test("the per-network count decides, not the generic one", () => {
+  // 260 chars plus a 40-char URL is 301 graphemes but 284 for X, which bills every
+  // URL at 23 — so X refuses a draft the raw count says fits.
+  const text = "x".repeat(260) + " https://example.com/a/rather/long/path";
+  assert.equal(shareState(X, text, "https://example.com/a/rather/long/path").tooLong, true);
+  assert.equal(shareState(LINKEDIN, text, null).tooLong, false);
+});
+
+test("an emoji costs one character in the decision, not its UTF-16 length", () => {
+  assert.equal(shareState({ limit: 2 }, "👩‍💻!", null).tooLong, false);
 });
 
 test("a plain instance hostname is accepted", () => {
