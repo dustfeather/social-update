@@ -16,6 +16,7 @@ import {
   residualMarkers,
   shareState,
   lastSelectedLine,
+  wrapEdit,
 } from "./draft-text";
 import { tags } from "@lezer/highlight";
 import {
@@ -537,13 +538,15 @@ const readInstance = () => {
 // whereas "put these characters around the selection" is just an edit.
 function wrap(view: EditorView, before: string, after = before) {
   const { from, to } = view.state.selection.main;
-  const selected = view.state.sliceDoc(from, to);
+  // The decision — insert the markers, or take an existing pair back off — is
+  // wrapEdit's, and is tested there. What is left here is the dispatch. The
+  // selection it returns holds the words, not the markers: the next transform
+  // should act on the same text, and an empty selection lands the caret between
+  // the markers ready to type.
+  const { from: start, to: end, insert, anchor, head } = wrapEdit(view.state.doc.toString(), from, to, before, after);
   view.dispatch({
-    changes: { from, to, insert: `${before}${selected}${after}` },
-    // Keep the words selected, not the markers: the next transform should act on
-    // the same text, and an empty selection lands the caret between the markers
-    // ready to type.
-    selection: { anchor: from + before.length, head: from + before.length + selected.length },
+    changes: { from: start, to: end, insert },
+    selection: { anchor, head },
     scrollIntoView: true,
   });
   view.focus();
@@ -797,8 +800,10 @@ function DraftCard({
       </div>
 
       <div className="toolbar">
-        {/* These insert Markdown rather than calling execCommand, so every one of
-            them is an ordinary edit: undo, redo and the caret all behave. */}
+        {/* These edit Markdown rather than calling execCommand, so every one of
+            them is an ordinary edit: undo, redo and the caret all behave. The
+            emphasis buttons toggle — pressing Bold on bold text takes the markers
+            off again, which is what execCommand did and what a B button means. */}
         <button type="button" onClick={() => view.current && wrap(view.current, "**")} title="Bold">
           <b>B</b>
         </button>
