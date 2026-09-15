@@ -578,6 +578,10 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
           markdown(),
           syntaxHighlighting(mdHighlight, { fallback: true }),
           EditorView.lineWrapping,
+          // `.cm-content` is a contenteditable with role="textbox", so without
+          // this it is announced as an unnamed text box — and it is the main
+          // editing surface of the card, next to a preview that does have a name.
+          EditorView.contentAttributes.of({ "aria-label": "Draft Markdown" }),
           EditorView.updateListener.of((u) => {
             // `docChanged` only: a selection move is not an edit, and saving on
             // one would mark the week dirty every time the caret moved.
