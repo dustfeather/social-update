@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit, listLine } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit, listLine, hasPlaceholderLink } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -674,4 +674,23 @@ test("indentation survives in every direction, because it is what nests the item
   assert.equal(listLine("  item", "- "), "  - item");
   assert.equal(listLine("  - item", "- "), "  item");
   assert.equal(listLine("\t- item", "1. "), "\t1. item");
+});
+
+// --- hasPlaceholderLink ----------------------------------------------------
+
+test("an unfilled link target is reported — nothing else can see it", () => {
+  // What the Link button leaves behind. It flattens to `docs (https://)`, which is
+  // well-formed, and every bracket and paren is matched, so the stray scan is quiet.
+  assert.equal(hasPlaceholderLink("see the [docs](https://)"), true);
+  assert.equal(hasPlaceholderLink("see the [docs]()"), true);
+});
+
+test("a finished link is not reported", () => {
+  assert.equal(hasPlaceholderLink("see the [docs](https://example.com)"), false);
+  assert.equal(hasPlaceholderLink("no links here at all"), false);
+});
+
+test("the placeholder syntax inside code is someone quoting it, not a blank", () => {
+  assert.equal(hasPlaceholderLink("write `[label](https://)` and fill it in"), false);
+  assert.equal(hasPlaceholderLink("```\n[label](https://)\n```"), false);
 });
