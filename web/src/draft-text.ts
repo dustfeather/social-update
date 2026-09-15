@@ -69,10 +69,27 @@ function splitFences(md: string): Array<{ code: boolean; text: string }> {
 // character that cannot occur in the source (NUL) makes it invisible to the
 // rules, and it is restored once they have all run.
 const ESC_OPEN = "\u0000";
+const CODE_OPEN = "\u0001";
 function flattenInline(s: string): string {
   const escaped: string[] = [];
+  const spans: string[] = [];
   return (
     s
+      // Code spans come out FIRST, before any rule that rewrites content. They used to
+      // be stripped near the end, after the image/link/autolink rules had already run
+      // over the whole line — so a span holding Markdown syntax was mangled rather than
+      // preserved: `[a](b)` became `a (b)` and `**x**` became `x`. splitFences exists
+      // because punctuation inside code is load-bearing; that argument does not stop at
+      // the fence. The backreference still closes a run of N ticks with a run of N, so
+      // ``a `b` c`` remains one span whose text contains ticks.
+      //
+      // The lookbehinds keep an escaped tick (\`) from opening or closing a span, which
+      // is why this runs before the escape pass rather than after: once \` is parked on
+      // a sentinel the delimiter is invisible here.
+      .replace(/(?<!\\)(`+)([\s\S]+?)(?<!\\)\1/g, (_m, _ticks: string, body: string) => {
+        spans.push(body);
+        return `${CODE_OPEN}${spans.length - 1}${CODE_OPEN}`;
+      })
       .replace(/\\([\\`*_{}[\]()#+\-.!~>])/g, (_m, ch: string) => {
         escaped.push(ch);
         return `${ESC_OPEN}${escaped.length - 1}${ESC_OPEN}`;
@@ -89,11 +106,6 @@ function flattenInline(s: string): string {
       })
       // <https://x.dev> autolinks carry no label at all.
       .replace(/<((?:https?|mailto):[^>\s]+)>/g, "$1")
-      // Code spans, in ONE backreferenced pass. A run of N ticks is closed by a
-      // run of N, so ``a `b` c`` is a single span whose text contains ticks.
-      // Stripping doubled ticks and then single ticks would take the inner pair
-      // too, turning it into `a b c`.
-      .replace(/(`+)([\s\S]+?)\1/g, "$2")
       // Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`.
       // The inner character class forbids the marker itself, which is what stops
       // a run spanning from one word's emphasis to another's.
@@ -109,6 +121,9 @@ function flattenInline(s: string): string {
       .replace(/~~([^~]+)~~/g, "$1")
       // The escapes come back as the characters they were always meant to be.
       .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
+      // The span's text returns exactly as written, minus its ticks — which is what a
+      // composer should show for `npm run build` or a path with underscores in it.
+      .replace(new RegExp(`${CODE_OPEN}(\\d+)${CODE_OPEN}`, "g"), (_m, i: string) => spans[Number(i)])
   );
 }
 
@@ -203,4 +218,34 @@ export function normalizeDrafts(drafts: Array<{ angle?: string | null; md?: stri
   md: string;
 }> {
   return drafts.map((d) => ({ angle: d.angle ?? "", md: draftMd(d) }));
+}
+
+// --- Counting ----------------------------------------------------------------
+// What a network thinks the length is. `String.length` counts UTF-16 code units,
+// which no composer here uses, and the difference stopped being cosmetic once the
+// count started DISABLING a button: a draft the network would accept is refused
+// locally, with no way to override it.
+//
+// Graphemes, not code points: a single emoji is routinely 2+ code units and can be
+// several code points joined with ZWJ, and Bluesky counts what the reader sees.
+// Intl.Segmenter is the only correct way to ask, and the code-point fallback is
+// still closer than `.length` where it is missing.
+export function countGraphemes(text: string): number {
+  try {
+    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+    let n = 0;
+    for (const _ of seg.segment(text)) n++;
+    return n;
+  } catch {
+    return [...text].length; // code points — wrong for ZWJ sequences, right for the rest
+  }
+}
+
+// X replaces every URL with a t.co short link before counting, so a link costs 23
+// no matter how long it is. Flattening spells links out as `label (url)`, which makes
+// long URLs the normal case in this app rather than an edge one — counting them
+// literally is what blocks a 340-char draft that X would measure at ~253.
+const TCO_LENGTH = 23;
+export function countForX(text: string): number {
+  return countGraphemes(text.replace(/https?:\/\/[^\s)]+/g, "x".repeat(TCO_LENGTH)));
 }
