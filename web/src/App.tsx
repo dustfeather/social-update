@@ -17,6 +17,7 @@ import {
   shareState,
   lastSelectedLine,
   wrapEdit,
+  listLine,
 } from "./draft-text";
 import { tags } from "@lezer/highlight";
 import {
@@ -167,6 +168,8 @@ export default function App() {
 
   // Reset to page 1 and clear stale drafts when switching weeks.
   function selectWeek(w: string) {
+    // Before the week changes, so the flushed save still sees the week it belongs to.
+    flushPendingSave();
     setWeek(w);
     setPage(1);
     setDrafts([]);
@@ -207,8 +210,37 @@ export default function App() {
   // Edits are debounced back onto the draft row: the editor fires on every
   // keystroke, and a PUT per character would be absurd. The timer is keyed to
   // the whole array so a change to any card restarts the same 800ms window.
-  const pendingSave = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pendingSave = useRef<{ timer: ReturnType<typeof setTimeout>; run: () => void } | null>(null);
   const latest = useRef<Draft[]>([]);
+  // The save's own idea of which week it belongs to. A save reports into a HEADER,
+  // and by the time an 800ms timer lands the header may be showing another week.
+  const weekRef = useRef(week);
+  const mounted = useRef(true);
+  useEffect(() => {
+    weekRef.current = week;
+  }, [week]);
+  useEffect(() => {
+    return () => {
+      mounted.current = false;
+      flushPendingSave();
+    };
+  }, []);
+
+  // Send a debounced save NOW instead of dropping it. Switching weeks used to leave
+  // the timer running: it saved the right row, because the draft id is captured, and
+  // then set saveState against the week the author had moved to — so week B's header
+  // read "saved ✓", or carried week A's error string, for an edit never made there.
+  // Cancelling the timer would have fixed the header by throwing away up to 800ms of
+  // typing, which is the worse of the two bugs; flushing keeps the edit, and the
+  // guards in the save itself keep the result off the wrong header.
+  function flushPendingSave() {
+    const p = pendingSave.current;
+    pendingSave.current = null;
+    if (p) {
+      clearTimeout(p.timer);
+      p.run();
+    }
+  }
   function editDraft(index: number, next: Draft) {
     // The updater is PURE. It used to schedule the save and call setSaveState
     // from inside here, which React is free to run twice (StrictMode) or during
@@ -221,13 +253,21 @@ export default function App() {
       return copy;
     });
     if (draftId === null) return;
-    if (pendingSave.current) clearTimeout(pendingSave.current);
+    if (pendingSave.current) clearTimeout(pendingSave.current.timer);
     setSaveState("saving");
-    pendingSave.current = setTimeout(() => {
+    const id = draftId;
+    const forWeek = week;
+    // Only the week that scheduled this save may report it. Without the check a
+    // result arriving after a week switch — or after the component went away —
+    // writes onto whatever is on screen.
+    const mine = () => mounted.current && weekRef.current === forWeek;
+    const run = () => {
+      pendingSave.current = null;
       // latest.current, not a copy captured here: the timer fires once for a
       // burst of keystrokes and must save the last of them, not the first.
-      saveDrafts(draftId, latest.current)
+      saveDrafts(id, latest.current)
         .then(() => {
+          if (!mine()) return;
           setSaveState("saved");
           setSaveError(null);
         })
@@ -235,10 +275,12 @@ export default function App() {
         // validation looked exactly like the wifi dropping. They need opposite
         // responses from the author, and only one of them is worth retrying.
         .catch((e) => {
+          if (!mine()) return;
           setSaveState("error");
           setSaveError(e instanceof Error ? e.message : "save failed");
         });
-    }, 800);
+    };
+    pendingSave.current = { timer: setTimeout(run, 800), run };
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -565,7 +607,9 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
   for (let n = first, i = 0; n <= last; n++) {
     const line = view.state.doc.line(n);
     if (!line.text.trim() && first !== last) continue; // don't bullet the blank lines in a block
-    changes.push({ from: line.from, insert: prefix(i++) });
+    // A whole-line replacement rather than an insertion, because the button has to
+    // be able to take a marker OFF as well as put one on — see listLine.
+    changes.push({ from: line.from, to: line.to, insert: listLine(line.text, prefix(i++)) });
   }
   view.dispatch({ changes, scrollIntoView: true });
   view.focus();
