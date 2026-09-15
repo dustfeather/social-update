@@ -165,6 +165,28 @@ test("inline code loses its ticks and keeps its text", () => {
   assert.equal(flattenMd("``a `b` c``"), "a `b` c");
 });
 
+test("a code span that crosses a line break is not rewritten by the LINE rules", () => {
+  // flattenLine runs per line and used to run BEFORE the spans were parked, so the
+  // second line of a span was read as Markdown structure and rewritten — and the
+  // restore then put the rewrite back verbatim. Same argument as splitFences, one
+  // level down: punctuation inside code is load-bearing.
+  assert.equal(flattenMd("say `x\n* y` done"), "say x\n* y done");
+  assert.equal(flattenMd("a `b\n> c` d"), "a b\n> c d");
+  assert.equal(flattenMd("a `b\n# c` d"), "a b\n# c d");
+  assert.equal(flattenMd("a `b\n1. c` d"), "a b\n1. c d");
+});
+
+test("a sentinel character in the draft itself is left alone, not turned into \"undefined\"", () => {
+  // The parking sentinels are NUL and SOH — "characters that cannot occur in the
+  // source" right up until someone pastes one, and the draft round-trips through the
+  // database. An index nothing parked resolved to undefined, which String.replace
+  // stringifies into the post.
+  const NUL = String.fromCharCode(0);
+  const SOH = String.fromCharCode(1);
+  assert.equal(flattenMd(`paste ${NUL}7${NUL} here`), `paste ${NUL}7${NUL} here`);
+  assert.equal(flattenMd(`paste ${SOH}7${SOH} here`), `paste ${SOH}7${SOH} here`);
+});
+
 test("a fenced block's contents are passed through untouched", () => {
   // Every one of these characters is Markdown syntax outside a fence, and none
   // of it is inside one. Corrupting a code block is the worst thing this

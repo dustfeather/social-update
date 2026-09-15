@@ -76,6 +76,39 @@ function splitFences(md: string): Array<{ code: boolean; text: string }> {
 // rules, and it is restored once they have all run.
 const ESC_OPEN = "\u0000";
 const CODE_OPEN = "\u0001";
+
+const CODE_SENTINEL = /\u0001(\d+)\u0001/g;
+
+// Code spans come out of the text before ANY rule rewrites it — the line rules
+// included, which is why this is called by flattenMd rather than by flattenInline.
+// A span may cross a line break, and flattenLine runs per line: `` `x\n* y` `` had
+// its second line read as a list item and rewritten to `- y`, and the restore then
+// put that rewrite back verbatim. The blockquote, heading, ordered-list and
+// horizontal-rule rules all had the same reach. splitFences exists because
+// punctuation inside code is load-bearing, and the file said so — "that argument
+// does not stop at the fence" — while the ordering here stopped exactly there.
+//
+// The backreference still closes a run of N ticks with a run of N, so ``a `b` c``
+// remains one span whose text contains ticks. The lookbehinds keep an escaped tick
+// (\`) from opening or closing a span, which is why this runs before the escape
+// pass rather than after: once \` is parked on a sentinel the delimiter is
+// invisible here.
+function parkSpans(text: string, spans: string[]): string {
+  return text.replace(/(?<!\\)(`+)([\s\S]+?)(?<!\\)\1/g, (_m, _ticks: string, body: string) => {
+    spans.push(body);
+    return `${CODE_OPEN}${spans.length - 1}${CODE_OPEN}`;
+  });
+}
+
+// The span's text returns exactly as written, minus its ticks — which is what a
+// composer should show for `npm run build` or a path with underscores in it. Last
+// of all, so the prose cleanups cannot reach inside it either. `?? _m` for the same
+// reason as the escape restore: an index nothing parked must not become the literal
+// word "undefined".
+function restoreSpans(text: string, spans: string[]): string {
+  return text.replace(CODE_SENTINEL, (_m, i: string) => spans[Number(i)] ?? _m);
+}
+
 // Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`. The
 // inner character class forbids the marker itself, which is what stops a run
 // spanning from one word's emphasis to another's.
@@ -125,24 +158,10 @@ function stripEmphasis(text: string): string {
 
 function flattenInline(s: string): string {
   const escaped: string[] = [];
-  const spans: string[] = [];
   const linked = (
     s
-      // Code spans come out FIRST, before any rule that rewrites content. They used to
-      // be stripped near the end, after the image/link/autolink rules had already run
-      // over the whole line — so a span holding Markdown syntax was mangled rather than
-      // preserved: `[a](b)` became `a (b)` and `**x**` became `x`. splitFences exists
-      // because punctuation inside code is load-bearing; that argument does not stop at
-      // the fence. The backreference still closes a run of N ticks with a run of N, so
-      // ``a `b` c`` remains one span whose text contains ticks.
-      //
-      // The lookbehinds keep an escaped tick (\`) from opening or closing a span, which
-      // is why this runs before the escape pass rather than after: once \` is parked on
-      // a sentinel the delimiter is invisible here.
-      .replace(/(?<!\\)(`+)([\s\S]+?)(?<!\\)\1/g, (_m, _ticks: string, body: string) => {
-        spans.push(body);
-        return `${CODE_OPEN}${spans.length - 1}${CODE_OPEN}`;
-      })
+      // Code spans are already parked on sentinels by the time this runs — see
+      // parkSpans, which the caller applies before the LINE rules, not here.
       .replace(/\\([\\`*_{}[\]()#+\-.!~>])/g, (_m, ch: string) => {
         escaped.push(ch);
         return `${ESC_OPEN}${escaped.length - 1}${ESC_OPEN}`;
@@ -164,11 +183,12 @@ function flattenInline(s: string): string {
     // Emphasis is the one group that has to run to a FIXED POINT rather than once
     // through — see stripEmphasis for why, and for why looping cannot loosen it.
     stripEmphasis(linked)
-      // The escapes come back as the characters they were always meant to be.
-      .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
-      // The span's text returns exactly as written, minus its ticks — which is what a
-      // composer should show for `npm run build` or a path with underscores in it.
-      .replace(new RegExp(`${CODE_OPEN}(\\d+)${CODE_OPEN}`, "g"), (_m, i: string) => spans[Number(i)])
+      // The escapes come back as the characters they were always meant to be. The
+      // `?? _m` is not dead: a draft can CONTAIN a sentinel — the author pastes one,
+      // and the draft round-trips through the database — and an index nothing parked
+      // resolves to undefined, which `replace` stringifies into the literal word
+      // "undefined" in the post. Leaving the token as written is the honest failure.
+      .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)] ?? _m)
   );
 }
 
@@ -229,7 +249,10 @@ function flattenParagraphs(lines: string[]): string[] {
 export function flattenMd(md: string): string {
   const parts = splitFences(md).map((part) => {
     if (part.code) return { code: true, text: part.text.replace(/\n+$/, "") };
-    const lines = part.text.split("\n");
+    // Before the line rules, not after: a code span may cross a line break, and
+    // everything below this point works a line at a time. See parkSpans.
+    const spans: string[] = [];
+    const lines = parkSpans(part.text, spans).split("\n");
     // A setext underline (=== or ---) belongs to the line above it, which the
     // heading rules never see because it is on its own line. Drop the underline
     // and keep the title. Checked before flattenLine so `---` is not first
@@ -251,7 +274,10 @@ export function flattenMd(md: string): string {
     // fence, so there is no blank run spanning one to collapse.
     return {
       code: false,
-      text: flattenParagraphs(out).join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n"),
+      text: restoreSpans(
+        flattenParagraphs(out).join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n"),
+        spans,
+      ),
     };
   });
   // Trim the document's outer whitespace, but only where the edge is prose. A
