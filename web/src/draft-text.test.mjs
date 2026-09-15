@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit, listLine, hasPlaceholderLink } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit, listLine, listEdits, hasPlaceholderLink } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -651,29 +651,64 @@ test("the Link button's asymmetric markers still insert", () => {
 // --- listLine --------------------------------------------------------------
 
 test("a list button adds its marker to a plain line", () => {
-  assert.equal(listLine("item", "- "), "- item");
-  assert.equal(listLine("one", "1. "), "1. one");
+  assert.deepEqual(listLine("item", "- "), { text: "- item", inserted: true });
+  assert.deepEqual(listLine("one", "1. "), { text: "1. one", inserted: true });
 });
 
 test("pressing the button a line already has takes the marker off", () => {
   // Inserting unconditionally gave `- - item`, and flattenLine passes that through
   // — the bullet rule matches the outer marker and keeps `- item` as the body — so
   // the doubled marker reached the composer.
-  assert.equal(listLine("- item", "- "), "item");
-  assert.equal(listLine("1. one", "1. "), "one");
-  assert.equal(listLine("* item", "- "), "item"); // any bullet character counts
-  assert.equal(listLine("2) two", "3. "), "two"); // any ordered delimiter, any number
+  assert.deepEqual(listLine("- item", "- "), { text: "item", inserted: false });
+  assert.deepEqual(listLine("1. one", "1. "), { text: "one", inserted: false });
+  assert.deepEqual(listLine("* item", "- "), { text: "item", inserted: false }); // any bullet char
+  assert.deepEqual(listLine("2) two", "3. "), { text: "two", inserted: false }); // any delimiter
 });
 
 test("the other button switches the line between the two kinds", () => {
-  assert.equal(listLine("- item", "1. "), "1. item");
-  assert.equal(listLine("1. one", "- "), "- one");
+  // A swap USES the prefix, so it costs a number where a removal does not.
+  assert.deepEqual(listLine("- item", "1. "), { text: "1. item", inserted: true });
+  assert.deepEqual(listLine("1. one", "- "), { text: "- one", inserted: true });
 });
 
 test("indentation survives in every direction, because it is what nests the item", () => {
-  assert.equal(listLine("  item", "- "), "  - item");
-  assert.equal(listLine("  - item", "- "), "  item");
-  assert.equal(listLine("\t- item", "1. "), "\t1. item");
+  assert.equal(listLine("  item", "- ").text, "  - item");
+  assert.equal(listLine("  - item", "- ").text, "  item");
+  assert.equal(listLine("\t- item", "1. ").text, "\t1. item");
+});
+
+// --- listEdits -------------------------------------------------------------
+
+const ordered = (i) => `${i + 1}. `;
+const bullet = () => "- ";
+const texts = (lines, prefix) => listEdits(lines, prefix).map((e) => e.text);
+
+test("a numbered selection counts from one, in order", () => {
+  assert.deepEqual(texts(["one", "two", "three"], ordered), ["1. one", "2. two", "3. three"]);
+});
+
+test("a line whose marker is REMOVED does not consume a number", () => {
+  // `prefix(i++)` advanced even on the removal branch, which never uses the prefix,
+  // so a mixed selection came out `one` / `2. two`.
+  assert.deepEqual(texts(["1. one", "two"], ordered), ["one", "1. two"]);
+});
+
+test("a swap does consume a number — only the removal branch is free", () => {
+  assert.deepEqual(texts(["- one", "two"], ordered), ["1. one", "2. two"]);
+});
+
+test("a blank line inside a block is left alone and costs no number", () => {
+  const edits = listEdits(["one", "", "two"], ordered);
+  assert.deepEqual(edits, [
+    { index: 0, text: "1. one" },
+    { index: 2, text: "2. two" },
+  ]);
+});
+
+test("a selection that is only a blank line still gets a marker", () => {
+  // The skip exists to avoid bulleting the gaps in a block. With nothing else
+  // selected, skipping would make the button do nothing at all.
+  assert.deepEqual(texts([""], bullet), ["- "]);
 });
 
 // --- hasPlaceholderLink ----------------------------------------------------
@@ -693,4 +728,17 @@ test("a finished link is not reported", () => {
 test("the placeholder syntax inside code is someone quoting it, not a blank", () => {
   assert.equal(hasPlaceholderLink("write `[label](https://)` and fill it in"), false);
   assert.equal(hasPlaceholderLink("```\n[label](https://)\n```"), false);
+});
+
+test("emphasis does not run from one list item into the next", () => {
+  // A list item is its own block. Treating a tight list as one paragraph paired the
+  // two openers across the boundary and ate both asterisks — and because the pair
+  // matched, the stray warning had nothing to report either.
+  const md = "- one *a\n- two b* c";
+  assert.equal(flattenMd(md), "- one *a\n- two b* c");
+  assert.deepEqual(residualMarkers(md), ["*"]);
+});
+
+test("emphasis still spans a soft line break WITHIN one item", () => {
+  assert.equal(flattenMd("- one *a\n  b* c"), "- one a\n  b c");
 });

@@ -227,6 +227,9 @@ function flattenLine(line: string): string {
 // A paragraph is the right unit rather than the whole segment, because emphasis may
 // NOT span a blank line: `**a\n\nb**` is two paragraphs and four literal asterisks,
 // and running the rules over the joined segment would silently join them.
+// Matched against ALREADY-flattened lines, where flattenLine has normalised every
+// bullet to `- ` and kept ordered markers as written.
+const STARTS_ITEM = /^[ \t]*(?:- |\d+[.)] )/;
 function flattenParagraphs(lines: string[]): string[] {
   const out: string[] = [];
   let para: string[] = [];
@@ -235,11 +238,19 @@ function flattenParagraphs(lines: string[]): string[] {
     para = [];
   };
   for (const line of lines) {
-    if (line.trim()) para.push(line);
-    else {
+    if (!line.trim()) {
       flush();
       out.push(line);
+      continue;
     }
+    // A list item is its own block, so emphasis cannot run from one item into the
+    // next — CommonMark ends the paragraph at the item boundary with no blank line
+    // needed. Treating a tight list as one paragraph let `- one *a` and `- two b* c`
+    // pair across the boundary: both asterisks were eaten, and because the pair
+    // MATCHED, residualMarkers had nothing left to warn about. Silent, and a tight
+    // bullet list is the shape a generated draft usually has.
+    if (STARTS_ITEM.test(line)) flush();
+    para.push(line);
   }
   flush();
   return out;
@@ -570,7 +581,13 @@ export function wrapEdit(doc: string, from: number, to: number, before: string, 
 // button switches the line between the two kinds, which is what a reader of a
 // toolbar expects and is otherwise a delete-then-retype. Indentation is preserved
 // either way, because a nested item that jumps to column 0 has left its list.
-export function listLine(text: string, prefix: string): string {
+export interface ListEdit {
+  text: string;
+  /** Whether `prefix` ended up in the line. False on the removal branch, which is
+   *  what an ordered-list counter has to know — see listEdits. */
+  inserted: boolean;
+}
+export function listLine(text: string, prefix: string): ListEdit {
   const bullet = /^([ \t]*)([*+-][ \t]+)/.exec(text);
   const ordered = /^([ \t]*)(\d+[.)][ \t]+)/.exec(text);
   const has = bullet ?? ordered;
@@ -578,8 +595,39 @@ export function listLine(text: string, prefix: string): string {
   if (has) {
     const rest = text.slice(has[1].length + has[2].length);
     // Same kind as the button pressed — take it off. Different kind — swap it.
-    return has[1] + (Boolean(ordered) === wantOrdered ? "" : prefix) + rest;
+    const same = Boolean(ordered) === wantOrdered;
+    return { text: has[1] + (same ? "" : prefix) + rest, inserted: !same };
   }
   const indent = /^[ \t]*/.exec(text)?.[0] ?? "";
-  return indent + prefix + text.slice(indent.length);
+  return { text: indent + prefix + text.slice(indent.length), inserted: true };
+}
+
+export interface LineEdit {
+  /** Index into the lines passed in, so the caller can map back to document offsets. */
+  index: number;
+  text: string;
+}
+
+/**
+ * The whole decision behind a list button: which of the selected lines change, what
+ * each becomes, and how the ordered numbering runs across them.
+ *
+ * A number is consumed only where the prefix actually lands. Two ways it does not:
+ * a blank line inside a multi-line block is skipped entirely, and a line that
+ * already carries this kind of marker has it REMOVED. Advancing the counter on
+ * either misnumbers the rest — `1. one` and `two` under "1. List" came out as
+ * `one` / `2. two`, because the removal had already consumed prefix(0).
+ */
+export function listEdits(lines: string[], prefix: (i: number) => string): LineEdit[] {
+  const edits: LineEdit[] = [];
+  let i = 0;
+  lines.forEach((text, index) => {
+    // Don't bullet the blank lines in a block; a single blank line IS the selection,
+    // so leaving it alone would make the button do nothing at all.
+    if (!text.trim() && lines.length > 1) return;
+    const edit = listLine(text, prefix(i));
+    if (edit.inserted) i++;
+    edits.push({ index, text: edit.text });
+  });
+  return edits;
 }
