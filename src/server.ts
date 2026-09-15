@@ -89,24 +89,25 @@ app.get("/api/drafts", (req, res) => {
   res.json(rows);
 });
 
-// Save edited drafts back onto an existing row. The UI edits in place (each
-// draft carries `html` for the rich-text editor plus the `text` that is what
-// actually gets pasted into a social composer), so this overwrites `output`
-// rather than inserting — a regenerate is what creates a new row.
+// Save edited drafts back onto an existing row. The UI edits in place, so this
+// overwrites `output` rather than inserting — a regenerate is what creates a new
+// row.
+//
+// A draft is `{ angle, md }` and Markdown is the only form stored. The plain text
+// a composer receives is derived from `md` where it is used, never persisted, so
+// there is no second representation here that could be saved disagreeing with the
+// first. Rows written before this carry `text` instead; they are read through the
+// client's `draftMd()` and are rewritten as `md` the first time one is edited.
 app.put("/api/drafts/:id", (req, res) => {
   const id = Number(req.params.id);
   const drafts = req.body?.drafts;
   if (!Number.isInteger(id) || id <= 0) {
     return res.status(400).json({ error: "id must be a positive integer" });
   }
-  if (!Array.isArray(drafts) || drafts.some((d) => typeof d?.text !== "string")) {
-    return res.status(400).json({ error: "drafts must be an array of { angle, text, html? }" });
+  if (!Array.isArray(drafts) || drafts.some((d) => typeof d?.md !== "string")) {
+    return res.status(400).json({ error: "drafts must be an array of { angle, md }" });
   }
-  const clean = drafts.map((d: any) => ({
-    angle: String(d.angle ?? ""),
-    text: String(d.text),
-    html: typeof d.html === "string" ? d.html : undefined,
-  }));
+  const clean = drafts.map((d: any) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
   if (!updateDraftOutput(id, JSON.stringify(clean))) {
     return res.status(404).json({ error: `no draft row ${id}` });
   }

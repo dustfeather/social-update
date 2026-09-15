@@ -9,7 +9,9 @@ const ITEM_BODY_CAP = 500; // keep each item compact so the prompt stays bounded
 
 export interface Draft {
   angle: string;
-  text: string;
+  /** Markdown. The stored source of a post; the plain text a composer receives is
+   *  derived from it in the browser (web/src/draft-text.ts) and never persisted. */
+  md: string;
 }
 
 // Pipe the assembled prompt to the local claude CLI and return the raw .result string.
@@ -47,8 +49,8 @@ function parseDrafts(result: string): Draft[] {
   const arr = JSON.parse(s);
   if (!Array.isArray(arr)) throw new Error("model output was not a JSON array");
   return arr
-    .filter((d) => d && typeof d.text === "string")
-    .map((d) => ({ angle: String(d.angle ?? ""), text: String(d.text) }));
+    .filter((d) => d && typeof d.md === "string")
+    .map((d) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
 }
 
 // tags is a JSON array written by the tagging pass; NULL until a run tags it.
@@ -100,10 +102,10 @@ export function mergeHumanized(drafts: Draft[], result: string): Draft[] {
   }
   if (!Array.isArray(edited) || edited.length !== drafts.length) return drafts;
   return drafts.map((d, i) => {
-    const text = edited[i];
+    const md = edited[i];
     // An empty or non-string edit is a dropped draft, which is the one outcome worse
     // than an unedited one.
-    return typeof text === "string" && text.trim() ? { ...d, text: text.trim() } : d;
+    return typeof md === "string" && md.trim() ? { ...d, md: md.trim() } : d;
   });
 }
 
@@ -116,7 +118,7 @@ async function humanize(drafts: Draft[]): Promise<Draft[]> {
     return drafts;
   }
   try {
-    const input = `${prompt.trim()}\n\n${JSON.stringify(drafts.map((d) => d.text), null, 2)}`;
+    const input = `${prompt.trim()}\n\n${JSON.stringify(drafts.map((d) => d.md), null, 2)}`;
     // The editing tools are taken away for this call. Left with them, the skill does
     // what an editor naturally does — writes the edited copy somewhere and reports
     // "Done" — and the JSON array the caller needs never arrives.

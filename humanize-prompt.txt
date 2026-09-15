@@ -8,10 +8,18 @@ Keep every fact, number, project name and link exactly as given — this is an e
 pass, not a rewrite. Do not add claims. Do not change the angle of a post. Do not
 merge or drop posts. Length may shrink; it must not grow.
 
-INPUT: a JSON array of strings, one per draft, in order.
+The drafts are MARKDOWN and must come back as Markdown. Edit the prose, not the
+syntax: keep [label](url) links intact rather than flattening them to bare URLs,
+keep `-` and `1.` list markers on the lines that have them, keep `backticks` around
+commands and paths. Emphasis is prose, so removing a **bold** that was AI padding is
+correct — but do not convert one form of markup into another, and do not introduce
+headings, tables or images that were not there. A marker you leave unbalanced (`**`
+with no closing pair) is shown to a reader literally.
+
+INPUT: a JSON array of Markdown strings, one per draft, in order.
 
 OUTPUT — this overrides how the skill would otherwise present its work:
-Your FINAL message must be exactly one JSON array of strings, the edited drafts, in
+Your FINAL message must be exactly one JSON array of Markdown strings, the edited drafts, in
 the same order and the same count as the input. Nothing else in that message: no
 preamble, no "Done", no list of the changes you made, no file. The caller parses that
 message and discards everything it cannot read as an array.

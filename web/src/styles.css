@@ -273,8 +273,12 @@ textarea {
   color: var(--muted);
 }
 
-.count-over {
-  color: #ffab5e;
+/* A disabled target is over its own limit, or needs a link this draft has not
+   got. Kept legible rather than faded to nothing: the button still has to be
+   readable for its title to be worth hovering. */
+.share-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .toolbar {
@@ -304,28 +308,76 @@ textarea {
   border-radius: 6px;
 }
 
-/* contenteditable: keep pre-wrap so the generated line breaks survive, but let
-   the editor grow with the text instead of scrolling in a fixed box. */
-.editor {
+/* Markdown source on the left, the bytes a composer will receive on the right.
+   Side by side above 900px and stacked below it, because the preview is the point
+   of the pane rather than decoration: it is what the post will actually look like
+   once every marker has been stripped. */
+.editor-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .editor-split {
+    grid-template-columns: 1fr;
+  }
+}
+
+.editor-md,
+.preview {
   min-height: 120px;
-  padding: 8px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
+  overflow: hidden;
+}
+
+/* CodeMirror brings its own layout; these only give it the card's palette and
+   let it grow with the text rather than scrolling in a fixed box. */
+.editor-md .cm-editor {
+  background: transparent;
+  color: var(--text);
+}
+
+.editor-md .cm-editor.cm-focused {
   outline: none;
 }
 
-.editor:focus {
+.editor-md:focus-within {
   border-color: var(--accent);
 }
 
-.editor a {
-  color: var(--accent);
+.editor-md .cm-content {
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+  caret-color: var(--text);
 }
 
-.editor ul {
-  margin: 4px 0;
-  padding-left: 20px;
+.editor-md .cm-cursor {
+  border-left-color: var(--text);
+}
+
+.editor-md .cm-selectionBackground,
+.editor-md .cm-content ::selection {
+  background: color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.editor-md .cm-gutters {
+  display: none;
+}
+
+/* Plain text, rendered as text. Never HTML — that is the whole reason this file
+   no longer needs a sanitizer. */
+.preview {
+  margin: 0;
+  padding: 8px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: inherit;
+  color: var(--muted);
 }
 
 .share {
