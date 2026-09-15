@@ -18,8 +18,10 @@ import {
   lastSelectedLine,
   wrapEdit,
   listLine,
+  hasPlaceholderLink,
 } from "./draft-text";
 import { createSaveLifecycle, type SaveLifecycle } from "./save-lifecycle";
+import { createFlasher, type Flasher } from "./flash";
 import { tags } from "@lezer/highlight";
 import {
   fetchWeeks,
@@ -716,24 +718,23 @@ function DraftCard({
   // as literal asterisks. Shown, never repaired, and computed from the SOURCE so
   // code spans are not mistaken for strays: see residualMarkers.
   const strays = useMemo(() => residualMarkers(md), [md]);
+  // Its own check rather than another stray marker: nothing here is unpaired, so
+  // residualMarkers is structurally blind to it. See hasPlaceholderLink.
+  const blankLink = useMemo(() => hasPlaceholderLink(md), [md]);
   // From the SOURCE, like `strays` above: a url inside a fence is code being quoted,
   // and flattening has already put it back verbatim by the time `text` exists.
   const postUrl = useMemo(() => firstUrl(md), [md]);
 
-  // One timer, replaced rather than stacked: copying twice inside the window used to
-  // leave the first timer running, which cleared the SECOND badge early. It is also
-  // cancelled on unmount, so a card closed within the window does not set state on
-  // its way out.
-  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
-  function flash<T>(set: (v: T | null) => void, value: T) {
-    set(value);
-    if (flashTimer.current) clearTimeout(flashTimer.current);
-    flashTimer.current = setTimeout(() => {
-      flashTimer.current = null;
-      set(null);
-    }, FLASH_MS);
-  }
+  // One timer PER BADGE. A single shared timer is wrong in both directions: two
+  // presses of the same button must replace each other, or the first timer cuts the
+  // second badge short — and a press of the OTHER button must not touch this one, or
+  // its replacement resets only its own setter and the first badge stays lit for the
+  // rest of the card's life. Cancelled on unmount, so a card closed inside the window
+  // does not set state on its way out. See flash.ts.
+  const flasher = useRef<Flasher | null>(null);
+  if (!flasher.current) flasher.current = createFlasher(FLASH_MS);
+  const flash = flasher.current;
+  useEffect(() => () => flash.cancelAll(), [flash]);
 
   async function copy(what: "post" | "md") {
     // One flavour per button rather than a multi-format ClipboardItem. The
@@ -742,13 +743,13 @@ function DraftCard({
     // more portable and clearer about which of the two you are pasting.
     try {
       await navigator.clipboard.writeText(what === "post" ? text : md);
-      flash(setCopied, { what, failed: false });
+      flash.show("copied", setCopied, { what, failed: false });
     } catch {
       // Say so. A swallowed rejection here is indistinguishable from a click that did
       // nothing, and the user's next move is to paste — getting whatever was on the
       // clipboard before. The text is still on screen, so nothing is lost, but only if
       // they know to select it.
-      flash(setCopied, { what, failed: true });
+      flash.show("copied", setCopied, { what, failed: true });
     }
   }
 
@@ -774,7 +775,7 @@ function DraftCard({
     // a rejected write was swallowed. On the targets that do not prefill (Facebook
     // gets a bare URL, LinkedIn often comes up empty) the user follows that hint and
     // pastes whatever was on the clipboard before.
-    flash(setShared, { key: s.key, copyFailed: false });
+    flash.show("shared", setShared, { key: s.key, copyFailed: false });
     navigator.clipboard.writeText(text).catch(() => {
       // Only a REJECTED write flips this, never a pending one: an unfocused document
       // can leave writeText pending forever, so waiting for it before showing anything
@@ -836,6 +837,14 @@ function DraftCard({
             title={`${strays.join(" and ")} is not consumed by the formatting — an emphasis run that never closes in its paragraph, or an empty pair like ****, so it reaches the post as literal characters. Close it, fill it, delete it, or escape it if you meant it literally.`}
           >
             {strays.join(" ")} literal
+          </span>
+        )}
+        {blankLink && (
+          <span
+            className="stray-markers"
+            title="A link still has the Link button's placeholder target, so the post would carry a bare (https://) where the address belongs. Fill it in, or delete the brackets to keep the words."
+          >
+            empty link
           </span>
         )}
         <button onClick={() => copy("post")} title="Copy the post as plain text, ready to paste">

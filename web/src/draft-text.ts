@@ -344,6 +344,22 @@ function dropCode(md: string): string {
 // it is the false-positive version of the false repair this function exists to
 // avoid. Code is dropped here rather than flattened, and so are backslash escapes:
 // `\*` is a literal asterisk the author asked for on purpose.
+/**
+ * True when a link still carries the Link button's placeholder target.
+ *
+ * The button inserts `[label](https://)` so the caret lands somewhere useful, and
+ * nothing downstream objects if the author never fills it in: `flattenMd` spells
+ * the link out as `label (https://)`, which is well-formed, and `residualMarkers`
+ * sees no unpaired marker because the brackets and parens are all matched. So an
+ * unfinished link reaches the composer looking deliberate.
+ *
+ * Read from the SOURCE and with code dropped, like `residualMarkers` — `](https://)`
+ * inside a fence is someone quoting this syntax, not leaving a blank.
+ */
+export function hasPlaceholderLink(md: string): boolean {
+  return /\]\(\s*(?:https?:\/\/)?\s*\)/.test(dropCode(md));
+}
+
 export function residualMarkers(md: string): string[] {
   const prose = dropCode(md).replace(/\\[\\`*_{}[\]()#+\-.!~>]/g, " ");
   // Flattening consumes every matched pair, so whatever survives is unpaired.
