@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit, listLine } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -646,4 +646,32 @@ test("the Link button's asymmetric markers still insert", () => {
   // `](https://)` is a template the author edits, so it never matches on the way
   // back and the button stays an insert.
   assert.equal(applyWrap("see docs", 4, 8, "[", "](https://)").doc, "see [docs](https://)");
+});
+
+// --- listLine --------------------------------------------------------------
+
+test("a list button adds its marker to a plain line", () => {
+  assert.equal(listLine("item", "- "), "- item");
+  assert.equal(listLine("one", "1. "), "1. one");
+});
+
+test("pressing the button a line already has takes the marker off", () => {
+  // Inserting unconditionally gave `- - item`, and flattenLine passes that through
+  // — the bullet rule matches the outer marker and keeps `- item` as the body — so
+  // the doubled marker reached the composer.
+  assert.equal(listLine("- item", "- "), "item");
+  assert.equal(listLine("1. one", "1. "), "one");
+  assert.equal(listLine("* item", "- "), "item"); // any bullet character counts
+  assert.equal(listLine("2) two", "3. "), "two"); // any ordered delimiter, any number
+});
+
+test("the other button switches the line between the two kinds", () => {
+  assert.equal(listLine("- item", "1. "), "1. item");
+  assert.equal(listLine("1. one", "- "), "- one");
+});
+
+test("indentation survives in every direction, because it is what nests the item", () => {
+  assert.equal(listLine("  item", "- "), "  - item");
+  assert.equal(listLine("  - item", "- "), "  item");
+  assert.equal(listLine("\t- item", "1. "), "\t1. item");
 });

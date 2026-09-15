@@ -543,3 +543,27 @@ export function wrapEdit(doc: string, from: number, to: number, before: string, 
     head: from + before.length + selected.length,
   };
 }
+
+// What a list-toolbar button should leave one line as. The emphasis buttons toggle
+// through wrapEdit; these used to insert unconditionally, so pressing "• List" on
+// `- item` gave `- - item` and "1. List" on `1. one` gave `1. 1. one`. Both reach
+// the composer literally — flattenLine matches the OUTER marker and keeps the rest
+// of the line as the item's body — so the doubled marker is in the post.
+//
+// Pressing the button a line already has removes that marker; pressing the OTHER
+// button switches the line between the two kinds, which is what a reader of a
+// toolbar expects and is otherwise a delete-then-retype. Indentation is preserved
+// either way, because a nested item that jumps to column 0 has left its list.
+export function listLine(text: string, prefix: string): string {
+  const bullet = /^([ \t]*)([*+-][ \t]+)/.exec(text);
+  const ordered = /^([ \t]*)(\d+[.)][ \t]+)/.exec(text);
+  const has = bullet ?? ordered;
+  const wantOrdered = /^\d+[.)]\s/.test(prefix);
+  if (has) {
+    const rest = text.slice(has[1].length + has[2].length);
+    // Same kind as the button pressed — take it off. Different kind — swap it.
+    return has[1] + (Boolean(ordered) === wantOrdered ? "" : prefix) + rest;
+  }
+  const indent = /^[ \t]*/.exec(text)?.[0] ?? "";
+  return indent + prefix + text.slice(indent.length);
+}
