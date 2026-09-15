@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -573,4 +573,23 @@ test("anything that is not a bare hostname is refused", () => {
 // The honest limit of this check, stated so nobody assumes more of it.
 test("a well-formed but wrong hostname still passes — only the UI can fix a typo", () => {
   assert.equal(isHostname("mastodon.socail"), true);
+});
+
+// --- lastSelectedLine ------------------------------------------------------
+
+test("a selection ending at a line start does not reach into the next line", () => {
+  // Dragging down through whole lines, or Shift+Down from column 0, leaves `to` at
+  // the FIRST position of the line after the selection — so `lineAt(to)` named a
+  // line the user had not selected and the list transforms prefixed it too.
+  assert.equal(lastSelectedLine(0, 10, { number: 3, from: 10 }), 2);
+});
+
+test("a selection ending mid-line covers that line", () => {
+  assert.equal(lastSelectedLine(0, 14, { number: 3, from: 10 }), 3);
+});
+
+test("an empty selection is one line, not zero", () => {
+  // The caret sitting at a line start is `to === from === line.from`: without the
+  // `to > from` guard the transform would skip back to the previous line.
+  assert.equal(lastSelectedLine(10, 10, { number: 3, from: 10 }), 3);
 });

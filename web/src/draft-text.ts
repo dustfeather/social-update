@@ -429,6 +429,20 @@ export function normalizeDrafts(drafts: Array<{ angle?: string | null; md?: stri
   return drafts.map((d) => ({ angle: d.angle ?? "", md: draftMd(d) }));
 }
 
+// Built once. Constructing a Segmenter is the expensive part — segmenting a
+// 300-character draft is not — and this sits on the per-keystroke path: the header
+// count plus a shareState call for every target is seven counts per card, per
+// render. The try/catch stays around the CONSTRUCTION, which is the only thing that
+// throws (an engine without Intl.Segmenter), so the code-point fallback behaves
+// exactly as it did.
+const GRAPHEMES: Intl.Segmenter | null = (() => {
+  try {
+    return new Intl.Segmenter(undefined, { granularity: "grapheme" });
+  } catch {
+    return null;
+  }
+})();
+
 // --- Counting ----------------------------------------------------------------
 // What a network thinks the length is. `String.length` counts UTF-16 code units,
 // which no composer here uses, and the difference stopped being cosmetic once the
@@ -440,14 +454,10 @@ export function normalizeDrafts(drafts: Array<{ angle?: string | null; md?: stri
 // Intl.Segmenter is the only correct way to ask, and the code-point fallback is
 // still closer than `.length` where it is missing.
 export function countGraphemes(text: string): number {
-  try {
-    const seg = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-    let n = 0;
-    for (const _ of seg.segment(text)) n++;
-    return n;
-  } catch {
-    return [...text].length; // code points — wrong for ZWJ sequences, right for the rest
-  }
+  if (!GRAPHEMES) return [...text].length; // code points — wrong for ZWJ sequences, right for the rest
+  let n = 0;
+  for (const _ of GRAPHEMES.segment(text)) n++;
+  return n;
 }
 
 // X replaces every URL with a t.co short link before counting, so a link costs 23
@@ -468,4 +478,20 @@ export function countForX(text: string): number {
 // the shapes that could never work; the UI's edit affordance is what fixes the rest.
 export function isHostname(host: string): boolean {
   return /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(host);
+}
+
+// The last line number a selection covers. A selection dragged down through whole
+// lines ends at the FIRST position of the line after the last one it covers, and
+// `lineAt(to)` then names a line the user did not select — so a list transform put
+// a bullet on it. Pure, and separate from prefixLines, because prefixLines needs a
+// live EditorView and this is the part that was wrong.
+//
+// `to > from` keeps a caret at a line start naming its own line: an empty selection
+// is a single line, not zero lines.
+export function lastSelectedLine(
+  from: number,
+  to: number,
+  lineAtTo: { number: number; from: number },
+): number {
+  return to > from && lineAtTo.from === to ? lineAtTo.number - 1 : lineAtTo.number;
 }

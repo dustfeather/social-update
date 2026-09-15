@@ -15,6 +15,7 @@ import {
   isHostname,
   residualMarkers,
   shareState,
+  lastSelectedLine,
 } from "./draft-text";
 import { tags } from "@lezer/highlight";
 import {
@@ -553,7 +554,7 @@ function wrap(view: EditorView, before: string, after = before) {
 function prefixLines(view: EditorView, prefix: (i: number) => string) {
   const { from, to } = view.state.selection.main;
   const first = view.state.doc.lineAt(from).number;
-  const last = view.state.doc.lineAt(to).number;
+  const last = lastSelectedLine(from, to, view.state.doc.lineAt(to));
   const changes = [];
   // `i` advances only where a prefix is actually inserted. Incrementing it in the
   // for-update ran on `continue` too, so a skipped blank line burned a number and
