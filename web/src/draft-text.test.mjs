@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -271,4 +271,63 @@ test("X bills any URL at 23 characters, however long it is", () => {
 test("a draft with no URL counts the same for X as for anyone else", () => {
   const plain = "shipped the collector fix";
   assert.equal(countForX(plain), countGraphemes(plain));
+});
+
+// --- safeHref ---------------------------------------------------------------
+// Restored: these went out with the HTML sanitizer's tests, but this function's SINK
+// did not. `item.url` is collector output from the DB and becomes a real <a href> in
+// the item list (App.tsx:49), so this is the one remaining injection boundary in the
+// web app — and the draft-format change did nothing to remove it.
+
+test("a javascript: url is refused rather than made clickable", () => {
+  assert.equal(safeHref("javascript:alert(1)"), null);
+  assert.equal(safeHref("JavaScript:alert(1)"), null); // scheme match is case-insensitive
+  assert.equal(safeHref("  javascript:alert(1)  "), null); // and survives padding
+});
+
+test("a data: url is refused too", () => {
+  assert.equal(safeHref("data:text/html;base64,PHNjcmlwdD4="), null);
+});
+
+test("an unknown scheme is refused rather than guessed at", () => {
+  assert.equal(safeHref("file:///etc/passwd"), null);
+  assert.equal(safeHref("vbscript:msgbox"), null);
+});
+
+test("http, https and mailto pass through unchanged", () => {
+  assert.equal(safeHref("https://github.com/x"), "https://github.com/x");
+  assert.equal(safeHref("http://example.com"), "http://example.com");
+  assert.equal(safeHref("mailto:someone@example.com"), "mailto:someone@example.com");
+});
+
+test("a relative url stays relative and a bare domain gets https", () => {
+  assert.equal(safeHref("/items/3"), "/items/3");
+  assert.equal(safeHref("#section"), "#section");
+  assert.equal(safeHref("example.com/x"), "https://example.com/x");
+});
+
+// --- isHostname -------------------------------------------------------------
+// This value is interpolated into `https://<host>/share`, so a bad shape becomes a
+// broken URL the user is dropped on with their draft gone.
+
+test("a plain instance hostname is accepted", () => {
+  assert.equal(isHostname("mastodon.social"), true);
+  assert.equal(isHostname("hachyderm.io"), true);
+  assert.equal(isHostname("social.example.co.uk"), true);
+  assert.equal(isHostname("my-instance.example.org"), true);
+});
+
+test("anything that is not a bare hostname is refused", () => {
+  assert.equal(isHostname(""), false);
+  assert.equal(isHostname("mastodon"), false); // no dot — not a reachable host
+  assert.equal(isHostname("mastodon social"), false);
+  assert.equal(isHostname("masto/don.social"), false);
+  assert.equal(isHostname("-leading.example"), false);
+  assert.equal(isHostname("trailing-.example"), false);
+  assert.equal(isHostname("double..dot"), false);
+});
+
+// The honest limit of this check, stated so nobody assumes more of it.
+test("a well-formed but wrong hostname still passes — only the UI can fix a typo", () => {
+  assert.equal(isHostname("mastodon.socail"), true);
 });
