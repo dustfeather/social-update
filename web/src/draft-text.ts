@@ -190,6 +190,21 @@ export function flattenMd(md: string): string {
 
 // An href safe to put on an <a>. javascript:/data: URLs are the whole reason this
 // exists — an anchor with a script URL is still script execution, one click later.
+// Markers still standing in FLATTENED text. Every emphasis rule needs a matched
+// pair, so `**shipped the collector` — an author who started a bold run and never
+// closed it — passes through and reaches LinkedIn as literal asterisks.
+//
+// Deliberately a warning and not a repair. Stripping a lone marker would have to
+// guess: `2 * 3`, a footnote `*`, `snake_case` and an arithmetic underscore are
+// all legitimate text a "clean up the strays" pass would eat, and silently
+// editing someone's post to fix their typo is worse than showing them the typo.
+// Flattening has already run, so anything left here is unpaired by construction.
+export function residualMarkers(flattened: string): string[] {
+  const found = new Set<string>();
+  for (const m of ["**", "__", "~~"]) if (flattened.includes(m)) found.add(m);
+  return [...found];
+}
+
 export function safeHref(url: string): string | null {
   const u = url.trim();
   if (/^(https?:|mailto:)/i.test(u)) return u;

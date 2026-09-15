@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -328,6 +328,30 @@ test("a relative url stays relative and a bare domain gets https", () => {
 // --- isHostname -------------------------------------------------------------
 // This value is interpolated into `https://<host>/share`, so a bad shape becomes a
 // broken URL the user is dropped on with their draft gone.
+
+// --- residual markers -------------------------------------------------------
+
+test("an unbalanced marker survives flattening rather than being guessed at", () => {
+  // Pinning the behaviour rather than the absence of one: a half-written bold run
+  // reaches the composer as literal asterisks, and the UI warns instead of
+  // repairing it.
+  assert.equal(flattenMd("**shipped the collector"), "**shipped the collector");
+  assert.deepEqual(residualMarkers(flattenMd("**shipped the collector")), ["**"]);
+});
+
+test("a balanced draft has no residual markers", () => {
+  assert.deepEqual(residualMarkers(flattenMd("**shipped** the _collector_")), []);
+});
+
+test("residual markers are reported once each, not per occurrence", () => {
+  assert.deepEqual(residualMarkers("**a **b ~~c"), ["**", "~~"]);
+});
+
+test("a single asterisk or underscore is not reported — it is ordinary text", () => {
+  // `2 * 3` and a lone footnote marker are not broken emphasis, and a warning
+  // that fires on them would train the author to ignore it.
+  assert.deepEqual(residualMarkers(flattenMd("2 * 3 = 6, see note *")), []);
+});
 
 test("a plain instance hostname is accepted", () => {
   assert.equal(isHostname("mastodon.social"), true);
