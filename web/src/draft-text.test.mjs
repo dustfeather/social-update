@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -104,6 +104,21 @@ test("leading and trailing whitespace is trimmed off the post", () => {
 });
 
 // --- code ------------------------------------------------------------------
+
+// The span's CONTENTS are the point: the ticks came off correctly before, but the
+// link/image/emphasis rules had already run over what was inside them.
+test("a code span's contents survive the inline rules verbatim", () => {
+  assert.equal(flattenMd("`[a](b)`"), "[a](b)");
+  assert.equal(flattenMd("`**x**`"), "**x**");
+  assert.equal(flattenMd("`a *b* c`"), "a *b* c");
+  assert.equal(flattenMd("`![i](u)`"), "![i](u)");
+  // The realistic case: a path with underscores, which the emphasis rule would eat.
+  assert.equal(flattenMd("run `social_collect_poll.sh --once`"), "run social_collect_poll.sh --once");
+});
+
+test("an escaped backtick does not open a code span", () => {
+  assert.equal(flattenMd("\\`not code\\` **bold**"), "`not code` bold");
+});
 
 test("inline code loses its ticks and keeps its text", () => {
   assert.equal(flattenMd("run `npm test` first"), "run npm test first");
@@ -225,4 +240,35 @@ test("a mixed row normalises every draft, not only the edited one", () => {
 test("normalizeDrafts survives a draft with neither field", () => {
   assert.deepEqual(normalizeDrafts([{ angle: "empty" }]), [{ angle: "empty", md: "" }]);
   assert.deepEqual(normalizeDrafts([{}]), [{ angle: "", md: "" }]);
+});
+
+// --- counting ---------------------------------------------------------------
+// These numbers decide whether a share button is DISABLED, so counting the wrong
+// unit refuses posts the network would have accepted.
+
+test("an emoji counts as one character, not its UTF-16 length", () => {
+  const e = "\u{1F680}"; // rocket: 2 code units, 1 grapheme
+  assert.equal(e.length, 2);
+  assert.equal(countGraphemes(e), 1);
+});
+
+test("a ZWJ emoji sequence counts as the one glyph a reader sees", () => {
+  const family = "\u{1F468}\u200D\u{1F469}\u200D\u{1F467}";
+  assert.ok(family.length > 4);
+  assert.equal(countGraphemes(family), 1);
+});
+
+test("X bills any URL at 23 characters, however long it is", () => {
+  const long = "https://github.com/dustfeather/social-update/commit/36ad3d4aaaaaaaaaaaaaaaaaaaaaaaaa";
+  assert.ok(long.length > 23);
+  assert.equal(countForX(`see ${long}`), "see ".length + 23);
+  // The case that was being wrongly blocked: under 280 for X, over it by raw length.
+  const draft = `${"x".repeat(250)} ${long}`; // 250 + space + 23 = 274 for X
+  assert.ok(draft.length > 280);
+  assert.ok(countForX(draft) <= 280);
+});
+
+test("a draft with no URL counts the same for X as for anyone else", () => {
+  const plain = "shipped the collector fix";
+  assert.equal(countForX(plain), countGraphemes(plain));
 });

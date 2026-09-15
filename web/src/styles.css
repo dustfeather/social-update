@@ -472,3 +472,6 @@ textarea {
   color: var(--muted);
   text-decoration: line-through dotted;
 }
+
+/* Over a limit we cannot verify (Mastodon's per-instance max): warn, stay clickable. */
+.share-warn { box-shadow: inset 0 0 0 1px #d9a441; }

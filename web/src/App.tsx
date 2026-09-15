@@ -3,9 +3,11 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
+import { syntaxHighlighting } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
-import { flattenMd, firstUrl, draftMd, safeHref } from "./draft-text";
+import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX } from "./draft-text";
+import { HighlightStyle } from "@codemirror/language";
+import { tags as t } from "@lezer/highlight";
 import {
   fetchWeeks,
   fetchItems,
@@ -409,9 +411,19 @@ const SHARES: Array<{
   urlOnly?: boolean;
   /** Mastodon has no single host to post to — the share URL is per instance. */
   needsInstance?: boolean;
+  /** How THIS network measures the post. Defaults to graphemes; X substitutes URLs. */
+  count?: (text: string) => number;
+  /** A limit we cannot actually know for this user's server: warn, never disable. */
+  soft?: boolean;
   href: (text: string, instance: string) => string;
 }> = [
-  { key: "x", label: "X", limit: 280, href: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}` },
+  {
+    key: "x",
+    label: "X",
+    limit: 280,
+    count: countForX,
+    href: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}`,
+  },
   {
     key: "linkedin",
     label: "LinkedIn",
@@ -433,7 +445,12 @@ const SHARES: Array<{
   {
     key: "mastodon",
     label: "Mastodon",
+    // 500 is only Mastodon's DEFAULT max_toot_chars. Instances raise it freely (5000
+    // is common) and advertise their own value, so a hard block here refuses posts the
+    // user's own server would take. Warn instead — we know the instance but not its
+    // limit, and guessing low costs more than guessing high.
     limit: 500,
+    soft: true,
     needsInstance: true,
     href: (t, instance) => `https://${instance}/share?text=${encodeURIComponent(t)}`,
   },
@@ -503,10 +520,29 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
   view.focus();
 }
 
+// The editor is dark-only (--bg #0f1115), and @codemirror/language's
+// defaultHighlightStyle is built for a light background: in it t.url, t.labelName and
+// t.contentSeparator are #219, which lands at roughly 1.4:1 on this background. That is
+// the URL inside [label](url) — the exact text the Link button inserts — rendered
+// effectively invisible. These colours come from the app's own palette instead.
+const mdHighlight = HighlightStyle.define([
+  { tag: t.heading, color: "#e6e8ec", fontWeight: "600" },
+  { tag: t.strong, color: "#e6e8ec", fontWeight: "700" },
+  { tag: t.emphasis, color: "#e6e8ec", fontStyle: "italic" },
+  { tag: t.strikethrough, color: "#8b90a0", textDecoration: "line-through" },
+  { tag: [t.link, t.labelName], color: "#7aa2f7" },
+  { tag: t.url, color: "#7aa2f7", textDecoration: "underline" },
+  { tag: [t.monospace, t.string], color: "#9ece6a" },
+  { tag: [t.list, t.quote], color: "#8b90a0" },
+  { tag: t.contentSeparator, color: "#8b90a0" },
+  { tag: [t.processingInstruction, t.meta], color: "#6b7080" },
+]);
+
 function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) => void }) {
-  const [copied, setCopied] = useState<"post" | "md" | null>(null);
+  const [copied, setCopied] = useState<{ what: "post" | "md"; failed: boolean } | null>(null);
   const [shared, setShared] = useState<{ key: string; copyFailed: boolean } | null>(null);
   const [instanceOpen, setInstanceOpen] = useState(false);
+  const pendingShare = useRef<string | null>(null);
   const [instance, setInstance] = useState(readInstance);
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
@@ -534,7 +570,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
           history(),
           keymap.of([...defaultKeymap, ...historyKeymap]),
           markdown(),
-          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          syntaxHighlighting(mdHighlight, { fallback: true }),
           EditorView.lineWrapping,
           EditorView.updateListener.of((u) => {
             // `docChanged` only: a selection move is not an edit, and saving on
@@ -566,7 +602,9 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // The bytes a composer actually receives. Derived, never stored — see
   // draft-text.ts. Memoised because the counter reads it on every keystroke.
   const text = useMemo(() => flattenMd(md), [md]);
-  const chars = text.length;
+  // The generic count, shown in the header. Per-network counts are computed below,
+  // because the networks disagree about what a character is.
+  const chars = useMemo(() => countGraphemes(text), [text]);
   const postUrl = useMemo(() => firstUrl(text), [text]);
 
   function flash(set: (v: any) => void, value: any) {
@@ -581,18 +619,26 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
     // more portable and clearer about which of the two you are pasting.
     try {
       await navigator.clipboard.writeText(what === "post" ? text : md);
-      flash(setCopied, what);
+      flash(setCopied, { what, failed: false });
     } catch {
-      /* denied clipboard permission — the text is on screen, nothing is lost */
+      // Say so. A swallowed rejection here is indistinguishable from a click that did
+      // nothing, and the user's next move is to paste — getting whatever was on the
+      // clipboard before. The text is still on screen, so nothing is lost, but only if
+      // they know to select it.
+      flash(setCopied, { what, failed: true });
     }
   }
 
-  function share(s: (typeof SHARES)[number]) {
-    if (s.needsInstance && !instance) {
+  // `host` overrides the state value: saveInstance resumes the share that opened the
+  // prompt, and it runs before React has re-rendered with the new instance.
+  function share(s: (typeof SHARES)[number], host?: string) {
+    const useInstance = host ?? instance;
+    if (s.needsInstance && !useInstance) {
+      pendingShare.current = s.key; // resume this one once the instance is known
       setInstanceOpen(true);
       return;
     }
-    const href = s.href(text, instance);
+    const href = s.href(text, useInstance);
     if (!href) return;
     // Open the composer INSIDE the click's user activation. Awaiting the
     // clipboard first spends the gesture — the tab is then popup-blocked — and an
@@ -617,6 +663,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
 
   function saveInstance() {
     const h = instance.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!h) return; // an empty host would build https:///share
     setInstance(h);
     try {
       localStorage.setItem(MASTODON_KEY, h);
@@ -624,6 +671,15 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       /* not remembering it costs one retype, not the share */
     }
     setInstanceOpen(false);
+    // Resume the share this prompt interrupted, rather than making the user click the
+    // same button again — the first Mastodon share always cost two clicks. This runs
+    // inside the Save button's own click, so window.open still has user activation.
+    const pending = pendingShare.current;
+    pendingShare.current = null;
+    if (pending) {
+      const s = SHARES.find((x) => x.key === pending);
+      if (s) share(s, h);
+    }
   }
 
   return (
@@ -632,10 +688,10 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
         <span className="angle">{draft.angle}</span>
         <span className="count">{chars} chars</span>
         <button onClick={() => copy("post")} title="Copy the post as plain text, ready to paste">
-          {copied === "post" ? "Copied ✓" : "Copy post"}
+          {copied?.what === "post" ? (copied.failed ? "Copy failed" : "Copied ✓") : "Copy post"}
         </button>
         <button onClick={() => copy("md")} title="Copy the Markdown source">
-          {copied === "md" ? "Copied ✓" : "Copy Markdown"}
+          {copied?.what === "md" ? (copied.failed ? "Copy failed" : "Copied ✓") : "Copy Markdown"}
         </button>
       </div>
 
@@ -704,18 +760,26 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
         {SHARES.map((s) => {
           // Two independent reasons a target cannot take this draft. Both disable
           // the button and say so, rather than opening a tab that drops the post.
-          const tooLong = chars > s.limit;
+          // Each network measures its own way — X bills any URL at 23 characters, the
+          // rest count graphemes — so this is never the header's number for X.
+          const n = (s.count ?? countGraphemes)(text);
+          const tooLong = n > s.limit;
+          // A soft limit is a number we cannot actually verify for this user's server,
+          // so it warns and leaves the button live. Refusing a post the instance would
+          // have accepted is the worse error.
           const noUrl = s.urlOnly && !postUrl;
-          const disabled = tooLong || noUrl;
+          const disabled = (tooLong && !s.soft) || noUrl;
           return (
             <button
               key={s.key}
-              className={`share-btn share-${s.key}${disabled ? " share-disabled" : ""}`}
+              className={`share-btn share-${s.key}${disabled ? " share-disabled" : ""}${tooLong && s.soft ? " share-warn" : ""}`}
               disabled={disabled}
               onClick={() => share(s)}
               title={
                 tooLong
-                  ? `${chars} characters — ${s.label} takes ${s.limit}`
+                  ? s.soft
+                    ? `${n} characters — over ${s.label}'s default ${s.limit}, but your instance may allow more`
+                    : `${n} characters — ${s.label} takes ${s.limit}`
                   : noUrl
                     ? `${s.label} can only share a link, and this draft has no URL in it`
                     : s.needsInstance && !instance
