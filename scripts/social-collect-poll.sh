@@ -11,6 +11,13 @@ set -uo pipefail
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
+# systemd runs us non-interactively, so .bashrc — where nvm inits — is never sourced
+# and `node` is not on PATH. The watchdog loads nvm for itself; this script needs it
+# too, for the one `node -e` below that reads the collector's result file. Without it
+# that call failed silently and every successful run reported inserted=0 to the UI.
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1
+
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"
 INGEST="${INGEST:-https://social.itguys.ro}"
@@ -162,8 +169,15 @@ cat "$log"
 # not print (it says "N items written"), so `inserted` was 0 on every successful run
 # and the UI recorded every collection as having found nothing.
 run_json="$HOME/.cache/social-update/claude/last-run.json"
-inserted="$(node -e 'try{process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).inserted??0))}catch{process.stdout.write("0")}' "$run_json" 2>/dev/null)"
-inserted="${inserted:-0}"
+# Errors are kept and inspected, not sent to /dev/null. The previous version discarded
+# them and defaulted to 0, so "node is not on PATH" and "the run genuinely inserted
+# nothing" produced the same number — which is how the grep bug this replaced survived
+# so long. Anything that is not a plain integer is reported and then treated as 0, so a
+# bad read degrades the count without losing the run.
+inserted="$(node -e 'const fs=require("fs");const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).inserted;if(!Number.isInteger(v))throw new Error("inserted is not an integer: "+JSON.stringify(v));process.stdout.write(String(v))' "$run_json" 2>&1)"
+case "$inserted" in
+  *[!0-9]*|'') echo "WARN: could not read inserted from $run_json — ${inserted:-<empty>}"; inserted=0 ;;
+esac
 
 if [ "$rc" -eq 0 ]; then
   body="$(printf '{"inserted":%s}' "$inserted")"
