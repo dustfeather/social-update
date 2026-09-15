@@ -19,6 +19,7 @@ import {
   wrapEdit,
   listLine,
 } from "./draft-text";
+import { createSaveLifecycle, type SaveLifecycle } from "./save-lifecycle";
 import { tags } from "@lezer/highlight";
 import {
   fetchWeeks,
@@ -36,6 +37,11 @@ import {
 } from "./api";
 
 const PAGE_SIZE = 25;
+// Long enough that a normal typing burst is one PUT, short enough that the author
+// never wonders whether their last sentence was kept.
+const SAVE_DEBOUNCE_MS = 800;
+// How long a "Copied ✓" / "Shared ✓" badge stays up.
+const FLASH_MS = 1500;
 
 // tags is a JSON array written by the collection run's tagging pass, NULL until a
 // run has tagged that item. Malformed content is treated as untagged rather than
@@ -169,7 +175,7 @@ export default function App() {
   // Reset to page 1 and clear stale drafts when switching weeks.
   function selectWeek(w: string) {
     // Before the week changes, so the flushed save still sees the week it belongs to.
-    flushPendingSave();
+    lifecycle.flush();
     setWeek(w);
     setPage(1);
     setDrafts([]);
@@ -208,39 +214,31 @@ export default function App() {
   }
 
   // Edits are debounced back onto the draft row: the editor fires on every
-  // keystroke, and a PUT per character would be absurd. The timer is keyed to
-  // the whole array so a change to any card restarts the same 800ms window.
-  const pendingSave = useRef<{ timer: ReturnType<typeof setTimeout>; run: () => void } | null>(null);
+  // keystroke, and a PUT per character would be absurd. The window is keyed to
+  // the whole array so a change to any card restarts the same one.
+  //
+  // The ordering around that debounce — flush on a week switch rather than cancel,
+  // and refuse to report a result whose week is no longer on screen — lives in
+  // save-lifecycle.ts, where a test can drive the clock. Switching weeks used to
+  // leave the timer running: it saved the right row, because the draft id is
+  // captured, and then set saveState against the week the author had moved to, so
+  // week B's header read "saved ✓", or carried week A's error string, for an edit
+  // never made there.
   const latest = useRef<Draft[]>([]);
-  // The save's own idea of which week it belongs to. A save reports into a HEADER,
-  // and by the time an 800ms timer lands the header may be showing another week.
-  const weekRef = useRef(week);
-  const mounted = useRef(true);
+  const saves = useRef<SaveLifecycle<string> | null>(null);
+  if (!saves.current) saves.current = createSaveLifecycle<string>(SAVE_DEBOUNCE_MS, week);
+  const lifecycle = saves.current;
   useEffect(() => {
-    weekRef.current = week;
-  }, [week]);
+    lifecycle.setScope(week);
+  }, [week, lifecycle]);
   useEffect(() => {
-    return () => {
-      mounted.current = false;
-      flushPendingSave();
-    };
-  }, []);
-
-  // Send a debounced save NOW instead of dropping it. Switching weeks used to leave
-  // the timer running: it saved the right row, because the draft id is captured, and
-  // then set saveState against the week the author had moved to — so week B's header
-  // read "saved ✓", or carried week A's error string, for an edit never made there.
-  // Cancelling the timer would have fixed the header by throwing away up to 800ms of
-  // typing, which is the worse of the two bugs; flushing keeps the edit, and the
-  // guards in the save itself keep the result off the wrong header.
-  function flushPendingSave() {
-    const p = pendingSave.current;
-    pendingSave.current = null;
-    if (p) {
-      clearTimeout(p.timer);
-      p.run();
-    }
-  }
+    // mount() in the BODY, not an initializer: StrictMode runs mount, cleanup and
+    // mount again in development, so a flag only ever set to false on the way out
+    // stays false from the second mount on — and every save result after that is
+    // discarded, leaving the header on "saving…" and never rendering an error.
+    lifecycle.mount();
+    return () => lifecycle.unmount();
+  }, [lifecycle]);
   function editDraft(index: number, next: Draft) {
     // The updater is PURE. It used to schedule the save and call setSaveState
     // from inside here, which React is free to run twice (StrictMode) or during
@@ -253,16 +251,12 @@ export default function App() {
       return copy;
     });
     if (draftId === null) return;
-    if (pendingSave.current) clearTimeout(pendingSave.current.timer);
     setSaveState("saving");
     const id = draftId;
-    const forWeek = week;
-    // Only the week that scheduled this save may report it. Without the check a
-    // result arriving after a week switch — or after the component went away —
-    // writes onto whatever is on screen.
-    const mine = () => mounted.current && weekRef.current === forWeek;
-    const run = () => {
-      pendingSave.current = null;
+    // `mine` is handed in rather than computed here: only the week that scheduled
+    // this save may report it, and that is a question about the week on screen when
+    // the request RESOLVES, not the one captured when it was scheduled.
+    lifecycle.schedule((mine) => {
       // latest.current, not a copy captured here: the timer fires once for a
       // burst of keystrokes and must save the last of them, not the first.
       saveDrafts(id, latest.current)
@@ -279,8 +273,7 @@ export default function App() {
           setSaveState("error");
           setSaveError(e instanceof Error ? e.message : "save failed");
         });
-    };
-    pendingSave.current = { timer: setTimeout(run, 800), run };
+    });
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
@@ -727,9 +720,19 @@ function DraftCard({
   // and flattening has already put it back verbatim by the time `text` exists.
   const postUrl = useMemo(() => firstUrl(md), [md]);
 
+  // One timer, replaced rather than stacked: copying twice inside the window used to
+  // leave the first timer running, which cleared the SECOND badge early. It is also
+  // cancelled on unmount, so a card closed within the window does not set state on
+  // its way out.
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (flashTimer.current) clearTimeout(flashTimer.current); }, []);
   function flash<T>(set: (v: T | null) => void, value: T) {
     set(value);
-    setTimeout(() => set(null), 1500);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => {
+      flashTimer.current = null;
+      set(null);
+    }, FLASH_MS);
   }
 
   async function copy(what: "post" | "md") {
