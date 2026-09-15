@@ -18,9 +18,20 @@ plus optional manually-entered items the author curated.
 TASK: produce 2–4 distinct draft posts. Vary angle (e.g. a shipped feature, a thing
 learned, a problem solved). Each draft must stand alone and be copy-paste ready.
 
+MARKDOWN: write each post in Markdown. It is the stored format and what the author
+edits. Keep it restrained — these are social posts, not documents:
+- **bold** and *italic* for genuine emphasis, sparingly.
+- `-` bullets or `1.` numbers for a real list.
+- [label](url) for links. Never a bare `<url>` autolink.
+- `backticks` for a command, path or identifier.
+- No headings, no tables, no images, no horizontal rules, no blockquotes.
+The markers are STRIPPED before the post reaches LinkedIn or X, which render none of
+them — so write prose that still reads correctly with every marker removed. Never
+rely on bold to carry meaning a reader would otherwise miss.
+
 OUTPUT FORMAT: return ONLY a JSON array, no prose around it. Each element:
 {
   "angle": "<short label, e.g. 'shipped feature'>",
-  "text": "<the full post text, ready to paste>"
+  "md": "<the full post, in Markdown>"
 }
 If there is not enough material for multiple posts, return fewer — but always a JSON array.

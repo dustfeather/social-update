@@ -1,6 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { EditorState } from "@codemirror/state";
+import { EditorView, keymap } from "@codemirror/view";
+import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
+import { markdown } from "@codemirror/lang-markdown";
+import { syntaxHighlighting, defaultHighlightStyle } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
-import { htmlToText, textToHtml, firstUrl, sanitizeHtml, sanitizeElement, safeHref } from "./draft-text";
+import { flattenMd, firstUrl, draftMd, safeHref } from "./draft-text";
 import {
   fetchWeeks,
   fetchItems,
@@ -388,262 +393,329 @@ function CollectButton() {
 
 // --- Draft editing -----------------------------------------------------------
 
-const X_LIMIT = 280;
-
-// Only X still reliably honours a prefilled body. LinkedIn's shareActive composer
-// usually does; Facebook's sharer dropped `quote` and takes a URL only. So every
-// share copies the text to the clipboard first — the tab that opens may come up
-// empty, and pasting is then one keystroke rather than a lost draft.
-const SHARES: Array<{ key: string; label: string; href: (text: string) => string }> = [
-  {
-    key: "x",
-    label: "X",
-    href: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}`,
-  },
+// Per-network hard limits, in characters of the FLATTENED text — which is what
+// each of these composers actually counts. Until now only X had a number here and
+// it was cosmetic: a tooltip warned and the button stayed live, so the one
+// network that truncates was also the one you could still fire a too-long post at.
+//
+// Facebook's is its post limit rather than a sharer limit; it takes a URL only
+// (see below), so nothing long ever reaches it.
+const SHARES: Array<{
+  key: string;
+  label: string;
+  limit: number;
+  /** Facebook's sharer dropped `quote` and accepts a link and nothing else, so a
+   *  draft with no URL in it has nothing to send. */
+  urlOnly?: boolean;
+  /** Mastodon has no single host to post to — the share URL is per instance. */
+  needsInstance?: boolean;
+  href: (text: string, instance: string) => string;
+}> = [
+  { key: "x", label: "X", limit: 280, href: (t) => `https://twitter.com/intent/tweet?text=${encodeURIComponent(t)}` },
   {
     key: "linkedin",
     label: "LinkedIn",
+    limit: 3000,
     href: (t) => `https://www.linkedin.com/feed/?shareActive=true&text=${encodeURIComponent(t)}`,
+  },
+  {
+    key: "bluesky",
+    label: "Bluesky",
+    limit: 300,
+    href: (t) => `https://bsky.app/intent/compose?text=${encodeURIComponent(t)}`,
+  },
+  {
+    key: "threads",
+    label: "Threads",
+    limit: 500,
+    href: (t) => `https://www.threads.net/intent/post?text=${encodeURIComponent(t)}`,
+  },
+  {
+    key: "mastodon",
+    label: "Mastodon",
+    limit: 500,
+    needsInstance: true,
+    href: (t, instance) => `https://${instance}/share?text=${encodeURIComponent(t)}`,
   },
   {
     key: "facebook",
     label: "Facebook",
+    limit: 63206,
+    urlOnly: true,
     href: (t) => {
+      // Never the bare `https://www.facebook.com/` this used to fall through to.
+      // The button is disabled when there is no URL, so this branch is only
+      // reachable if that check and this one ever disagree — and dropping the
+      // user on a logged-in feed with their draft silently gone is worse than
+      // doing nothing at all.
       const u = firstUrl(t);
-      return u
-        ? `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}`
-        : "https://www.facebook.com/";
+      return u ? `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}` : "";
     },
   },
 ];
 
+// Remembered so the instance is asked for once rather than on every share. It is
+// a hostname the user typed about themselves, not a credential.
+const MASTODON_KEY = "social-update.mastodon-instance";
+const readInstance = () => {
+  try {
+    return localStorage.getItem(MASTODON_KEY) ?? "";
+  } catch {
+    return ""; // storage can be denied outright; a share still works, it just asks again
+  }
+};
+
+// A Markdown transform on the current selection, applied as a CodeMirror
+// transaction so it lands in the undo history like typing does. This is what
+// replaced the execCommand toolbar: execCommand could not set attributes, had no
+// defined behaviour across browsers, and is deprecated with no replacement —
+// whereas "put these characters around the selection" is just an edit.
+function wrap(view: EditorView, before: string, after = before) {
+  const { from, to } = view.state.selection.main;
+  const selected = view.state.sliceDoc(from, to);
+  view.dispatch({
+    changes: { from, to, insert: `${before}${selected}${after}` },
+    // Keep the words selected, not the markers: the next transform should act on
+    // the same text, and an empty selection lands the caret between the markers
+    // ready to type.
+    selection: { anchor: from + before.length, head: from + before.length + selected.length },
+    scrollIntoView: true,
+  });
+  view.focus();
+}
+
+// Prefix every line the selection touches. `- ` and `1. ` are line constructs, so
+// wrapping the selection would produce `- one\ntwo` rather than two list items.
+function prefixLines(view: EditorView, prefix: (i: number) => string) {
+  const { from, to } = view.state.selection.main;
+  const first = view.state.doc.lineAt(from).number;
+  const last = view.state.doc.lineAt(to).number;
+  const changes = [];
+  for (let n = first, i = 0; n <= last; n++, i++) {
+    const line = view.state.doc.line(n);
+    if (!line.text.trim() && first !== last) continue; // don't bullet the blank lines in a block
+    changes.push({ from: line.from, insert: prefix(i) });
+  }
+  view.dispatch({ changes, scrollIntoView: true });
+  view.focus();
+}
+
 function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) => void }) {
-  const [copied, setCopied] = useState(false);
-  const [linkOpen, setLinkOpen] = useState(false);
-  const [linkUrl, setLinkUrl] = useState("");
-  const editor = useRef<HTMLDivElement | null>(null);
-  const savedRange = useRef<Range | null>(null);
+  const [copied, setCopied] = useState<"post" | "md" | null>(null);
+  const [shared, setShared] = useState<string | null>(null);
+  const [instanceOpen, setInstanceOpen] = useState(false);
+  const [instance, setInstance] = useState(readInstance);
+  const host = useRef<HTMLDivElement | null>(null);
+  const view = useRef<EditorView | null>(null);
 
-  // The editor is UNCONTROLLED on purpose: re-rendering a contenteditable from
-  // React state on every keystroke resets the caret to the start. Seed it once,
-  // then read back out of the DOM.
-  // Sanitized on the way in: draft.html has been round-tripped through the API
-  // and the DB since it was last in a trusted DOM.
-  const initialHtml = useRef(sanitizeHtml(draft.html ?? textToHtml(draft.text)));
+  // `draftMd` is what makes a row written before Markdown existed open cleanly:
+  // plain text is valid Markdown, and the old `text` already spelled links out.
+  const md = draftMd(draft);
 
-  // Seeded by hand, NOT with dangerouslySetInnerHTML.
-  //
-  // Measured: with that prop on the div, every keystroke was erased. Typing fires
-  // onInput -> onChange -> setDrafts, App re-renders, and React re-applies the
-  // prop — writing the ORIGINAL seed back over what was just typed. The character
-  // reached React state (the counter advanced, the row saved) and vanished from
-  // the DOM, which reads as "the editor won't let me type".
-  //
-  // Assigning innerHTML once on mount keeps the markup out of React's diff
-  // entirely: the div has no children prop, so nothing re-renders it and the
-  // browser owns its content, which is what "uncontrolled" was supposed to mean.
+  // The editor is uncontrolled, for the same reason the contenteditable before it
+  // was: re-creating its content from React state on every keystroke would move
+  // the caret. CodeMirror owns the document; React is told about changes, and only
+  // pushes one back when the value arrives from somewhere else (a regenerate).
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  const angleRef = useRef(draft.angle);
+  angleRef.current = draft.angle;
+
   useEffect(() => {
-    if (editor.current) editor.current.innerHTML = initialHtml.current;
+    if (!host.current) return;
+    const v = new EditorView({
+      parent: host.current,
+      state: EditorState.create({
+        doc: md,
+        extensions: [
+          history(),
+          keymap.of([...defaultKeymap, ...historyKeymap]),
+          markdown(),
+          syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          EditorView.lineWrapping,
+          EditorView.updateListener.of((u) => {
+            // `docChanged` only: a selection move is not an edit, and saving on
+            // one would mark the week dirty every time the caret moved.
+            if (u.docChanged) onChangeRef.current({ angle: angleRef.current, md: u.state.doc.toString() });
+          }),
+        ],
+      }),
+    });
+    view.current = v;
+    return () => {
+      v.destroy();
+      view.current = null;
+    };
+    // Mount only. `md` is read once as the seed; see the effect below for updates.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function syncFromEditor() {
-    const el = editor.current;
-    if (!el) return;
-    // Store the sanitized serialization, not raw innerHTML: a paste of rich
-    // content can drop arbitrary markup into a contenteditable. The live DOM is
-    // left alone so the caret doesn't move.
-    onChange({ ...draft, html: sanitizeElement(el), text: htmlToText(el) });
+  // An external change — a regenerate replacing this card's draft — has to reach
+  // the editor, but re-applying our OWN edit would reset the caret to the start
+  // on every keystroke. Comparing against the live document distinguishes them:
+  // after our own update listener fires, the two already agree.
+  useEffect(() => {
+    const v = view.current;
+    if (!v || v.state.doc.toString() === md) return;
+    v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: md } });
+  }, [md]);
+
+  // The bytes a composer actually receives. Derived, never stored — see
+  // draft-text.ts. Memoised because the counter reads it on every keystroke.
+  const text = useMemo(() => flattenMd(md), [md]);
+  const chars = text.length;
+  const postUrl = useMemo(() => firstUrl(text), [text]);
+
+  function flash(set: (v: any) => void, value: any) {
+    set(value);
+    setTimeout(() => set(null), 1500);
   }
 
-  // execCommand is deprecated but remains the only zero-dependency way to get
-  // bold/italic/lists/links inside contenteditable, and every current browser
-  // still implements it. Focus first so the command has a selection to act on.
-  function exec(command: string, value?: string) {
-    editor.current?.focus();
-    document.execCommand(command, false, value);
-    syncFromEditor();
-  }
-
-  // Opening the link box moves focus out of the editor, which drops the
-  // selection — stash the range first and restore it on apply.
-  function openLink() {
-    const sel = window.getSelection();
-    savedRange.current = sel && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
-    const selected = savedRange.current?.toString() ?? "";
-    setLinkUrl(/^https?:\/\//.test(selected) ? selected : "");
-    setLinkOpen(true);
-  }
-
-  function applyLink() {
-    const url = linkUrl.trim();
-    if (!url) {
-      setLinkOpen(false);
-      return;
-    }
-    // A bare domain gets https://; a javascript:/data: URL is refused outright
-    // (an allowlisted <a> with a script URL is still script execution).
-    const href = safeHref(url);
-    if (!href) {
-      setLinkOpen(false);
-      return;
-    }
-    const el = editor.current;
-    const range = savedRange.current;
-    if (el && range) {
-      el.focus();
-      const sel = window.getSelection();
-      sel?.removeAllRanges();
-      sel?.addRange(range);
-      if (range.collapsed) {
-        // Nothing was selected. createLink would be a no-op on a collapsed
-        // range, so insert the URL as text and select it back.
-        document.execCommand("insertText", false, href);
-        const after = window.getSelection();
-        const node = after?.anchorNode;
-        if (after && node) {
-          const r = document.createRange();
-          r.setStart(node, Math.max(0, after.anchorOffset - href.length));
-          r.setEnd(node, after.anchorOffset);
-          after.removeAllRanges();
-          after.addRange(r);
-        }
-      }
-      document.execCommand("createLink", false, href);
-      // execCommand can't set attributes, so open links in a new tab ourselves.
-      el.querySelectorAll("a").forEach((a) => {
-        a.setAttribute("target", "_blank");
-        a.setAttribute("rel", "noreferrer");
-      });
-      syncFromEditor();
-    }
-    setLinkOpen(false);
-    setLinkUrl("");
-  }
-
-  // Copy both flavours: HTML for editors that accept it, plain text for the
-  // social composers that don't.
-  async function copy() {
+  async function copy(what: "post" | "md") {
+    // One flavour per button rather than a multi-format ClipboardItem. The
+    // clipboard's custom-type support would need a `web text/markdown` prefix and
+    // is refused outright in some browsers, so a single explicit choice is both
+    // more portable and clearer about which of the two you are pasting.
     try {
-      if (typeof ClipboardItem !== "undefined" && navigator.clipboard.write) {
-        await navigator.clipboard.write([
-          new ClipboardItem({
-            "text/html": new Blob([draft.html ?? textToHtml(draft.text)], { type: "text/html" }),
-            "text/plain": new Blob([draft.text], { type: "text/plain" }),
-          }),
-        ]);
-      } else {
-        await navigator.clipboard.writeText(draft.text);
-      }
+      await navigator.clipboard.writeText(what === "post" ? text : md);
+      flash(setCopied, what);
     } catch {
-      await navigator.clipboard.writeText(draft.text);
+      /* denied clipboard permission — the text is on screen, nothing is lost */
     }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
   }
 
-  function share(href: string) {
+  function share(s: (typeof SHARES)[number]) {
+    if (s.needsInstance && !instance) {
+      setInstanceOpen(true);
+      return;
+    }
+    const href = s.href(text, instance);
+    if (!href) return;
     // Open the composer INSIDE the click's user activation. Awaiting the
-    // clipboard first spends the gesture — the tab then gets popup-blocked —
-    // and an unfocused document can leave writeText pending forever, which
-    // looks like a dead button. Copy afterwards, best-effort.
+    // clipboard first spends the gesture — the tab is then popup-blocked — and an
+    // unfocused document can leave writeText pending forever, which looks like a
+    // dead button. Copy afterwards, best-effort.
     window.open(href, "_blank", "noopener,noreferrer");
-    navigator.clipboard.writeText(draft.text).catch(() => {});
+    navigator.clipboard.writeText(text).catch(() => {});
+    flash(setShared, s.key);
   }
 
-  const chars = draft.text.length;
+  function saveInstance() {
+    const h = instance.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    setInstance(h);
+    try {
+      localStorage.setItem(MASTODON_KEY, h);
+    } catch {
+      /* not remembering it costs one retype, not the share */
+    }
+    setInstanceOpen(false);
+  }
 
   return (
     <article className="card">
       <div className="card-head">
         <span className="angle">{draft.angle}</span>
-        <span className={`count${chars > X_LIMIT ? " count-over" : ""}`}>{chars} chars</span>
-        <button onClick={copy}>{copied ? "Copied ✓" : "Copy"}</button>
+        <span className="count">{chars} chars</span>
+        <button onClick={() => copy("post")} title="Copy the post as plain text, ready to paste">
+          {copied === "post" ? "Copied ✓" : "Copy post"}
+        </button>
+        <button onClick={() => copy("md")} title="Copy the Markdown source">
+          {copied === "md" ? "Copied ✓" : "Copy Markdown"}
+        </button>
       </div>
 
       <div className="toolbar">
-        {/* onMouseDown+preventDefault keeps the editor's selection alive: a plain
-            click blurs the editor before the command can run. */}
-        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("bold")} title="Bold">
+        {/* These insert Markdown rather than calling execCommand, so every one of
+            them is an ordinary edit: undo, redo and the caret all behave. */}
+        <button type="button" onClick={() => view.current && wrap(view.current, "**")} title="Bold">
           <b>B</b>
         </button>
-        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => exec("italic")} title="Italic">
+        <button type="button" onClick={() => view.current && wrap(view.current, "*")} title="Italic">
           <i>I</i>
         </button>
-        <button
-          type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => exec("insertUnorderedList")}
-          title="Bulleted list"
-        >
+        <button type="button" onClick={() => view.current && wrap(view.current, "`")} title="Code">
+          {"<>"}
+        </button>
+        <button type="button" onClick={() => view.current && prefixLines(view.current, () => "- ")} title="Bulleted list">
           • List
         </button>
-        <button type="button" onMouseDown={(e) => e.preventDefault()} onClick={openLink} title="Add link">
-          🔗 Link
-        </button>
         <button
           type="button"
-          onMouseDown={(e) => e.preventDefault()}
-          onClick={() => exec("removeFormat")}
-          title="Clear formatting"
+          onClick={() => view.current && prefixLines(view.current, (i) => `${i + 1}. `)}
+          title="Numbered list"
         >
-          Clear
+          1. List
+        </button>
+        <button type="button" onClick={() => view.current && wrap(view.current, "[", "](https://)")} title="Link">
+          🔗 Link
         </button>
       </div>
 
-      {linkOpen && (
+      <div className="editor-split">
+        <div className="editor-md" ref={host} />
+        {/* What the composer gets, character for character. Rendered as text in a
+            <pre>, never as HTML — which is why this file no longer needs a
+            sanitizer: there is no longer anywhere to inject into. */}
+        <pre className="preview" aria-label="Plain text preview">
+          {text}
+        </pre>
+      </div>
+
+      {instanceOpen && (
         <div className="linkbar">
           <input
             autoFocus
-            value={linkUrl}
-            placeholder="https://example.com"
-            onChange={(e) => setLinkUrl(e.target.value)}
+            value={instance}
+            placeholder="mastodon.social"
+            onChange={(e) => setInstance(e.target.value)}
             onKeyDown={(e) => {
-              // preventDefault matters: applyLink() puts focus and the saved
-              // selection back INSIDE the editor, so an un-prevented Enter lands
-              // there as a line break and replaces the very text being linked.
               if (e.key === "Enter") {
                 e.preventDefault();
-                applyLink();
+                saveInstance();
               }
               if (e.key === "Escape") {
                 e.preventDefault();
-                setLinkOpen(false);
+                setInstanceOpen(false);
               }
             }}
           />
-          <button onClick={applyLink}>Apply</button>
-          <button onClick={() => setLinkOpen(false)}>Cancel</button>
+          <button onClick={saveInstance}>Save instance</button>
+          <button onClick={() => setInstanceOpen(false)}>Cancel</button>
         </div>
       )}
 
-      <div
-        className="card-text editor"
-        ref={editor}
-        contentEditable
-        suppressContentEditableWarning
-        onInput={syncFromEditor}
-        onBlur={syncFromEditor}
-      />
-
       <div className="share">
         <span className="share-label">Share</span>
-        {SHARES.map((s) => (
-          <button
-            key={s.key}
-            className={`share-btn share-${s.key}`}
-            onClick={() => share(s.href(draft.text))}
-            title={
-              s.key === "x" && chars > X_LIMIT
-                ? `${chars} characters — X will cut this at ${X_LIMIT}`
-                : `Copy the text and open ${s.label}`
-            }
-          >
-            {s.label}
-          </button>
-        ))}
+        {SHARES.map((s) => {
+          // Two independent reasons a target cannot take this draft. Both disable
+          // the button and say so, rather than opening a tab that drops the post.
+          const tooLong = chars > s.limit;
+          const noUrl = s.urlOnly && !postUrl;
+          const disabled = tooLong || noUrl;
+          return (
+            <button
+              key={s.key}
+              className={`share-btn share-${s.key}${disabled ? " share-disabled" : ""}`}
+              disabled={disabled}
+              onClick={() => share(s)}
+              title={
+                tooLong
+                  ? `${chars} characters — ${s.label} takes ${s.limit}`
+                  : noUrl
+                    ? `${s.label} can only share a link, and this draft has no URL in it`
+                    : s.needsInstance && !instance
+                      ? "Choose your Mastodon instance"
+                      : `Copy the text and open ${s.label}`
+              }
+            >
+              {shared === s.key ? "Opened ✓" : s.label}
+            </button>
+          );
+        })}
         <span className="hint share-hint">
-          Text is copied to your clipboard first — Facebook (and sometimes LinkedIn) won't prefill
-          it, so paste into the composer.
+          The post is copied to your clipboard first — Facebook (and sometimes LinkedIn) won't
+          prefill it, so paste into the composer. A greyed target is over its length limit, or
+          takes a link this draft doesn't have.
         </span>
       </div>
     </article>

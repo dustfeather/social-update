@@ -1,5 +1,7 @@
 // Thin typed wrapper over the backend API.
 
+import { normalizeDrafts } from "./draft-text";
+
 export interface WeekRow {
   week: string;
   count: number;
@@ -31,10 +33,12 @@ export interface ItemsPage {
 
 export interface Draft {
   angle: string;
-  /** Plain text — this is what gets pasted into a social composer. */
-  text: string;
-  /** Rich-text markup from the editor. Absent on a freshly generated draft. */
-  html?: string;
+  /** Markdown — the stored source, and the only form of the post that is saved. */
+  md: string;
+  /** Plain text, on rows written before Markdown was the format. Read through
+   *  `draftMd()`, never written: the paste-ready text is derived from `md` at the
+   *  point of use so the two cannot drift apart. */
+  text?: string;
 }
 
 async function getJson<T>(url: string): Promise<T> {
@@ -57,8 +61,14 @@ export interface DraftRow {
   drafts: Draft[];
 }
 
-export const fetchDrafts = (week: string) =>
-  getJson<DraftRow[]>(`/api/drafts?week=${encodeURIComponent(week)}`);
+// Every row is normalised on the way in — see `normalizeDrafts`. A draft stored
+// before Markdown was the format arrives as `{ angle, text }`, and converting it
+// here rather than at the point of display is what keeps a save containing one
+// from being rejected wholesale.
+export const fetchDrafts = async (week: string): Promise<DraftRow[]> => {
+  const rows = await getJson<DraftRow[]>(`/api/drafts?week=${encodeURIComponent(week)}`);
+  return rows.map((r) => ({ ...r, drafts: normalizeDrafts(r.drafts ?? []) }));
+};
 
 export interface CollectRun {
   id: number;
@@ -106,7 +116,9 @@ export async function generate(week: string, manualText: string): Promise<{ draf
   return res.json();
 }
 
-// Persist in-place edits to a generated draft row (rich-text editor + links).
+// Persist in-place edits to a generated draft row. Only `md` is sent: the plain
+// text a composer receives is derived from it on read, so there is nothing else
+// about a draft that could be saved out of date.
 export async function saveDrafts(draftId: number, drafts: Draft[]): Promise<void> {
   const res = await fetch(`/api/drafts/${draftId}`, {
     method: "PUT",

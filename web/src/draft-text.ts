@@ -1,126 +1,206 @@
 // Pure text helpers for the draft editor. Kept out of App.tsx so they can be
-// exercised directly (see draft-text.test.mjs) — the DOM walk is the part that
-// decides what actually lands in a social composer.
-
-const ALLOWED_TAGS = new Set([
-  "B", "STRONG", "I", "EM", "U", "BR", "P", "DIV", "SPAN", "UL", "OL", "LI", "A",
-]);
-// Elements whose *contents* are not text and must go with them.
-const DROP_CONTENT = new Set([
-  "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "TEMPLATE", "NOSCRIPT", "SVG", "MATH",
-]);
-
-// Social composers take PLAIN TEXT, not HTML — so the rich markup is only ever a
-// local convenience and the text is the artifact. Flatten block elements to
-// newlines, and spell out a link's href whenever it isn't already the anchor's
-// own text: <a href="https://x.dev">my post</a> becomes "my post (https://x.dev)",
-// which is the only form that survives a paste into LinkedIn or X.
-export function htmlToText(root: HTMLElement): string {
-  const walk = (node: Node): string => {
-    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
-    if (node.nodeType !== Node.ELEMENT_NODE) return "";
-    const el = node as HTMLElement;
-    // A <script>/<style> body is not prose: without this its source text rides
-    // along into the post ("todaywindow.__mark()"). Pasted rich content can put
-    // one in the editor even though the sanitizer strips it on the way back out.
-    if (DROP_CONTENT.has(el.tagName.toUpperCase())) return "";
-    const inner = Array.from(el.childNodes).map(walk).join("");
-    switch (el.tagName) {
-      case "BR":
-        return "\n";
-      case "A": {
-        const href = el.getAttribute("href") ?? "";
-        const shown = inner.trim();
-        if (!href || shown === href) return inner;
-        // Keep whatever whitespace the anchor swallowed OUTSIDE the parenthetical.
-        // A double-click selection usually includes the trailing space, and
-        // appending blindly gives "activity  (url)collector."
-        const lead = inner.slice(0, inner.length - inner.trimStart().length);
-        const trail = inner.slice(inner.trimEnd().length);
-        return `${lead}${shown} (${href})${trail}`;
-      }
-      case "LI":
-        return `- ${inner}\n`;
-      case "P":
-      case "DIV":
-      case "UL":
-      case "OL":
-        return inner.endsWith("\n") ? inner : `${inner}\n`;
-      default:
-        return inner;
-    }
-  };
-  return walk(root).replace(/\n{3,}/g, "\n\n").trim();
-}
-
-// Seed the editor from whatever the draft already has: earlier edits (html) win,
-// otherwise the generated plain text, with newlines turned into real breaks.
-export function textToHtml(text: string): string {
-  const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return text
-    .split(/\n/)
-    .map((line) => (line.trim() ? esc(line) : "<br>"))
-    .join("<br>");
-}
-
-// First URL in the draft — Facebook's sharer only accepts a link, so this is what
-// it gets when the post mentions one.
-export function firstUrl(text: string): string | null {
-  return text.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
-}
-
-
-// --- Sanitizing ------------------------------------------------------------
-// The editor is seeded with dangerouslySetInnerHTML, so every path that reaches
-// it is an HTML injection sink: draft.html round-trips through PUT /api/drafts/:id
-// and the DB, and the server stores the string verbatim. Anything that can POST
-// to the API could therefore park an <img onerror> in a draft row and have it
-// fire in the browser the next time that week is opened. Sanitize at the sink —
-// it is the one place every source (generated, edited, stored) converges.
+// exercised directly (see draft-text.test.mjs) — flattenMd decides what actually
+// gets pasted into a social composer, so it is the part worth pinning down.
 //
-// This builds the output from an allowlist instead of blacklisting tags, so an
-// unknown element cannot slip through: an element that isn't allowed is dropped
-// but its text is kept, and only the attributes named here are ever emitted.
-const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const escAttr = (s: string) => escText(s).replace(/"/g, "&quot;");
+// A draft is `{ angle, md }`. Markdown is the stored source and the only thing
+// the generator, the editor and the API ever persist. The plain text a composer
+// receives is DERIVED here and never stored, so it cannot go stale against the
+// Markdown it came from — there is no second copy to disagree.
+//
+// This file used to hold an HTML sanitizer, because the editor was a
+// contenteditable seeded with innerHTML and every path into it was an injection
+// sink. A Markdown source editor has no such sink: the value is text, it is
+// rendered into the editor and a <pre>, and nothing is ever parsed as HTML. The
+// sanitizer was not hardened, it was deleted along with the sink it guarded.
+//
+// `safeHref` stayed, and the distinction matters: it never guarded draft markup.
+// It guards the `url` an ITEM carries, which is collector output stored in the DB
+// and rendered as a real <a href> in the item list. That sink is untouched by the
+// draft format, so removing this with the rest would have made a `javascript:`
+// item url clickable again.
 
-// javascript:/data: hrefs are the other half of the same sink — an allowlisted
-// <a> with a script URL is still script execution, just one click later.
+// --- Flattening ------------------------------------------------------------
+// LinkedIn and X take PLAIN TEXT. They render no Markdown at all, so any syntax
+// left in the output is shown literally — `**shipped**` reaches a reader as four
+// asterisks around a word. Flattening is therefore not a nicety, it is the step
+// that makes a draft postable, and it runs on every draft rather than only on
+// hand-edited ones now that the generator emits Markdown too.
+//
+// What survives is what reads correctly as plain text on its own: list bullets,
+// numbered items, and a link spelled out as `label (url)`. What is stripped is
+// what only means something to a renderer: emphasis runs, heading hashes, code
+// ticks, blockquote markers, rules.
+//
+// Emphasis markers are STRIPPED rather than converted to the Unicode bold
+// glyphs LinkedIn posts often use. Those glyphs do render bold there, but screen
+// readers announce them character by character or skip them entirely, and they
+// do not match LinkedIn's own search. The emphasis stays in the stored Markdown
+// as authoring intent; it just does not reach the post.
+
+// Fenced code blocks are pulled out FIRST and their contents passed through
+// untouched. Inside a fence, `# x` is a shell comment and `*p` is a pointer —
+// applying the line rules to them would corrupt the one kind of content whose
+// punctuation is load-bearing.
+function splitFences(md: string): Array<{ code: boolean; text: string }> {
+  const out: Array<{ code: boolean; text: string }> = [];
+  // `(?![\s\S])` rather than `$` for the unterminated case. The `m` flag is
+  // needed for `^` on the closing fence, and under it `$` matches at every line
+  // END — so the lazy body stopped at the first newline, the block's remaining
+  // lines were flattened as prose, and the closing fence matched again as a
+  // second, empty block.
+  const re = /^[ \t]*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm;
+  let last = 0;
+  for (const m of md.matchAll(re)) {
+    const start = m.index ?? 0;
+    if (start > last) out.push({ code: false, text: md.slice(last, start) });
+    out.push({ code: true, text: m[2] });
+    last = start + m[0].length;
+  }
+  if (last < md.length) out.push({ code: false, text: md.slice(last) });
+  return out;
+}
+
+// Inline constructs, in an order chosen so one does not eat another's markers.
+//
+// A backslash escape is taken out of the text FIRST, not unescaped last. `\*` is
+// a literal asterisk the author escaped precisely so it would not be read as
+// syntax — but every rule below sees a bare `*`, so `\*star\*` was matched as
+// emphasis around `star\` and came out as `\star\`. Parking each escape on a
+// character that cannot occur in the source (NUL) makes it invisible to the
+// rules, and it is restored once they have all run.
+const ESC_OPEN = "\u0000";
+function flattenInline(s: string): string {
+  const escaped: string[] = [];
+  return (
+    s
+      .replace(/\\([\\`*_{}[\]()#+\-.!~>])/g, (_m, ch: string) => {
+        escaped.push(ch);
+        return `${ESC_OPEN}${escaped.length - 1}${ESC_OPEN}`;
+      })
+      // Images before links: the syntax differs only by the leading `!`, and a
+      // link rule applied first would leave a stray `!` where the image was.
+      // Alt text is what a reader would have been told, so it is what is kept.
+      .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
+      // `[label](url)` -> `label (url)`, matching how the old HTML path spelled
+      // an anchor out. A link whose label already IS the url is not doubled.
+      .replace(/\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, (_m, label: string, url: string) => {
+        const shown = label.trim();
+        return !shown || shown === url ? url : `${shown} (${url})`;
+      })
+      // <https://x.dev> autolinks carry no label at all.
+      .replace(/<((?:https?|mailto):[^>\s]+)>/g, "$1")
+      // Code spans, in ONE backreferenced pass. A run of N ticks is closed by a
+      // run of N, so ``a `b` c`` is a single span whose text contains ticks.
+      // Stripping doubled ticks and then single ticks would take the inner pair
+      // too, turning it into `a b c`.
+      .replace(/(`+)([\s\S]+?)\1/g, "$2")
+      // Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`.
+      // The inner character class forbids the marker itself, which is what stops
+      // a run spanning from one word's emphasis to another's.
+      .replace(/\*\*\*([^*]+)\*\*\*/g, "$1")
+      .replace(/___([^_]+)___/g, "$1")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/__([^_]+)__/g, "$1")
+      .replace(/\*([^*\n]+)\*/g, "$1")
+      // `_italic_` only at a word boundary: snake_case_names are ordinary words
+      // in this corpus (file paths, identifiers) and must survive intact.
+      .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
+      // ~~struck~~ text was still written; the reader should still see it.
+      .replace(/~~([^~]+)~~/g, "$1")
+      // The escapes come back as the characters they were always meant to be.
+      .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
+  );
+}
+
+function flattenLine(line: string): string {
+  // Horizontal rules carry no words at all, so they leave nothing behind.
+  if (
+    /^[ \t]*(?:\*[ \t]*){3,}$/.test(line) ||
+    /^[ \t]*(?:-[ \t]*){3,}$/.test(line) ||
+    /^[ \t]*(?:_[ \t]*){3,}$/.test(line)
+  ) {
+    return "";
+  }
+  let s = line;
+  // Blockquote markers, however many levels deep.
+  s = s.replace(/^[ \t]*(?:>[ \t]?)+/, "");
+  // ATX headings lose the hashes and keep the words. A post has no headings, but
+  // a heading in a draft is still a line the author wrote.
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+/, "").replace(/[ \t]+#+[ \t]*$/, "");
+  // List markers are NORMALISED, not removed: `- item` reads correctly in a
+  // composer and is what the old HTML path produced for <li>. Indentation is
+  // preserved so a nested list still looks nested.
+  const bullet = s.match(/^([ \t]*)[*+-][ \t]+(.*)$/);
+  if (bullet) return `${bullet[1]}- ${flattenInline(bullet[2])}`;
+  const ordered = s.match(/^([ \t]*)(\d+)[.)][ \t]+(.*)$/);
+  if (ordered) return `${ordered[1]}${ordered[2]}. ${flattenInline(ordered[3])}`;
+  return flattenInline(s);
+}
+
+// Markdown in, the exact bytes a social composer should receive out.
+export function flattenMd(md: string): string {
+  const parts = splitFences(md).map((part) => {
+    if (part.code) return part.text.replace(/\n+$/, "");
+    const lines = part.text.split("\n");
+    // A setext underline (=== or ---) belongs to the line above it, which the
+    // heading rules never see because it is on its own line. Drop the underline
+    // and keep the title. Checked before flattenLine so `---` is not first
+    // mistaken for a horizontal rule.
+    const out: string[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const next = lines[i + 1];
+      if (lines[i].trim() && next !== undefined && /^[ \t]*(?:={2,}|-{2,})[ \t]*$/.test(next)) {
+        out.push(flattenLine(lines[i]));
+        i++;
+        continue;
+      }
+      out.push(flattenLine(lines[i]));
+    }
+    return out.join("\n");
+  });
+  // Collapse the blank runs the stripping leaves behind — a removed rule or
+  // heading turns one blank line into three.
+  return parts.join("").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+// An href safe to put on an <a>. javascript:/data: URLs are the whole reason this
+// exists — an anchor with a script URL is still script execution, one click later.
 export function safeHref(url: string): string | null {
   const u = url.trim();
   if (/^(https?:|mailto:)/i.test(u)) return u;
   if (/^[/#]/.test(u)) return u; // same-origin relative
   if (/^[a-z][a-z0-9+.-]*:/i.test(u)) return null; // some other scheme — refuse
-  return `https://${u}`; // bare domain the user typed
+  return `https://${u}`; // bare domain
 }
 
-// Serializes a container's CONTENTS, re-emitting only what is allowed. The root
-// itself is never emitted — it is the editor div (or a parsed <body>), and
-// wrapping it back in would nest one more div on every save round-trip.
-// Read-only on the DOM (same shape as htmlToText) so it is testable with a stub.
-export function sanitizeElement(root: HTMLElement): string {
-  const walk = (node: Node): string => {
-    if (node.nodeType === Node.TEXT_NODE) return escText(node.textContent ?? "");
-    if (node.nodeType !== Node.ELEMENT_NODE) return ""; // comments, PIs, doctype
-    const el = node as HTMLElement;
-    const tag = el.tagName.toUpperCase();
-    if (DROP_CONTENT.has(tag)) return "";
-    const inner = Array.from(el.childNodes).map(walk).join("");
-    if (tag === "BR") return "<br>";
-    if (!ALLOWED_TAGS.has(tag)) return inner; // unknown element: keep the text
-    if (tag === "A") {
-      const href = safeHref(el.getAttribute("href") ?? "");
-      if (!href) return inner;
-      return `<a href="${escAttr(href)}" target="_blank" rel="noopener noreferrer">${inner}</a>`;
-    }
-    return `<${tag.toLowerCase()}>${inner}</${tag.toLowerCase()}>`;
-  };
-  return Array.from(root.childNodes).map(walk).join("");
+// First URL in the flattened post — Facebook's sharer only accepts a link, so
+// this is what it gets when the post mentions one. Deliberately run over the
+// FLATTENED text, not the Markdown: a url inside `[label](url)` is a real link
+// to share, and one inside a code fence is a string literal that is not.
+export function firstUrl(text: string): string | null {
+  return text.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
 }
 
-// Parse with DOMParser rather than a detached div: a document from
-// parseFromString is inert, so nothing runs even while we are inspecting it.
-export function sanitizeHtml(html: string): string {
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  return sanitizeElement(doc.body as HTMLElement);
+// The Markdown a draft should start from, for a draft written before Markdown
+// was the stored format. Plain text IS valid Markdown, and `text` on those rows
+// was produced by the old htmlToText — which already spelled links out as
+// `label (url)` — so taking it verbatim loses nothing. `html` is dropped: on
+// this corpus it was `<br>`-joined copies of `text` in every row but one, and
+// that one's only markup was an anchor `text` already carries.
+export function draftMd(draft: { md?: string | null; text?: string | null }): string {
+  return draft.md ?? draft.text ?? "";
+}
+
+// Applied to every draft row as it is read, so a pre-Markdown draft becomes a
+// `{ angle, md }` one at the door and the rest of the app never meets the old
+// shape. Doing it only where a draft is DISPLAYED is not enough: an edit saves
+// the whole array, so a legacy draft sitting untouched beside the edited one
+// travelled to the API still carrying `text` and no `md`, and the server — which
+// requires `md` on every element — rejected the entire save. Editing any draft in
+// such a row failed, and the card you were typing in said SAVE FAILED.
+export function normalizeDrafts(drafts: Array<{ angle?: string | null; md?: string | null; text?: string | null }>): Array<{
+  angle: string;
+  md: string;
+}> {
+  return drafts.map((d) => ({ angle: d.angle ?? "", md: draftMd(d) }));
 }
