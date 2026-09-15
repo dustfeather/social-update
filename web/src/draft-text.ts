@@ -495,3 +495,51 @@ export function lastSelectedLine(
 ): number {
   return to > from && lineAtTo.from === to ? lineAtTo.number - 1 : lineAtTo.number;
 }
+
+/** What a toolbar wrap button should change, decided without an editor. */
+export interface WrapEdit {
+  from: number;
+  to: number;
+  insert: string;
+  /** Where the selection should land afterwards — the text, never the markers. */
+  anchor: number;
+  head: number;
+}
+
+// Bold on already-bold text has to UNBOLD it. Inserting unconditionally produced
+// `****text****`, which no emphasis rule consumes — each one needs a non-marker,
+// non-space character straight after the opening run — so it reached the composer
+// as eight literal asterisks. The `execCommand` toolbar this replaced toggled, and
+// that was the one behaviour the rewrite changed without meaning to.
+//
+// The markers can sit on either side of the selection boundary, and which one the
+// author produces depends on how they made the selection: double-clicking the word
+// inside `**text**` selects `text` and leaves the markers outside it, while dragging
+// across the whole run selects them too. Both are the same intent.
+//
+// A run of the SAME marker character just inside the pair is not a toggle: pressing
+// Italic on a selected `**bold**` means bold AND italic, so the inner `*bold*` guard
+// sends it down the insert path and yields `***bold***` rather than eating a level
+// of emphasis the author did not ask about.
+export function wrapEdit(doc: string, from: number, to: number, before: string, after: string): WrapEdit {
+  const selected = doc.slice(from, to);
+  const marker = before[before.length - 1];
+  const inside =
+    selected.length >= before.length + after.length && selected.startsWith(before) && selected.endsWith(after)
+      ? selected.slice(before.length, selected.length - after.length)
+      : null;
+  if (inside !== null && !inside.startsWith(marker) && !inside.endsWith(marker)) {
+    return { from, to, insert: inside, anchor: from, head: from + inside.length };
+  }
+  const outer = from - before.length;
+  if (outer >= 0 && doc.slice(outer, from) === before && doc.slice(to, to + after.length) === after) {
+    return { from: outer, to: to + after.length, insert: selected, anchor: outer, head: outer + selected.length };
+  }
+  return {
+    from,
+    to,
+    insert: `${before}${selected}${after}`,
+    anchor: from + before.length,
+    head: from + before.length + selected.length,
+  };
+}

@@ -5,7 +5,7 @@
 // draft rather than only hand-edited ones, because the generator emits Markdown.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine } from "./draft-text.ts";
+import { flattenMd, firstUrl, draftMd, normalizeDrafts, countGraphemes, countForX, safeHref, isHostname, residualMarkers, shareState, lastSelectedLine, wrapEdit } from "./draft-text.ts";
 
 // --- emphasis --------------------------------------------------------------
 
@@ -592,4 +592,58 @@ test("an empty selection is one line, not zero", () => {
   // The caret sitting at a line start is `to === from === line.from`: without the
   // `to > from` guard the transform would skip back to the previous line.
   assert.equal(lastSelectedLine(10, 10, { number: 3, from: 10 }), 3);
+});
+
+// --- wrapEdit --------------------------------------------------------------
+
+// Apply a WrapEdit the way the editor would, so the assertions read as documents.
+function applyWrap(doc, from, to, before, after = before) {
+  const e = wrapEdit(doc, from, to, before, after);
+  return {
+    doc: doc.slice(0, e.from) + e.insert + doc.slice(e.to),
+    selected: (doc.slice(0, e.from) + e.insert + doc.slice(e.to)).slice(e.anchor, e.head),
+  };
+}
+
+test("Bold on plain text wraps it and keeps the words selected", () => {
+  const r = applyWrap("say hello now", 4, 9, "**");
+  assert.equal(r.doc, "say **hello** now");
+  assert.equal(r.selected, "hello");
+});
+
+test("Bold on already-bold text takes the markers off instead of doubling them", () => {
+  // The insert-only version produced `****hello****`, which no emphasis rule
+  // consumes — each needs a non-marker, non-space character after the opening run —
+  // so it reached the composer as eight literal asterisks.
+  assert.equal(applyWrap("say **hello** now", 4, 13, "**").doc, "say hello now");
+});
+
+test("the markers may sit outside the selection — double-clicking the word", () => {
+  // `**hello**` double-clicked selects `hello` and leaves the markers out of it.
+  const r = applyWrap("say **hello** now", 6, 11, "**");
+  assert.equal(r.doc, "say hello now");
+  assert.equal(r.selected, "hello");
+});
+
+test("Italic on bold text means bold AND italic, not one level less", () => {
+  // The inner run is the same marker character, so this is not a toggle-off.
+  assert.equal(applyWrap("say **hello** now", 4, 13, "*").doc, "say ***hello*** now");
+});
+
+test("an empty selection between an existing pair removes it", () => {
+  // The caret parked in `**|**` — the empty pair the old toolbar produced.
+  assert.equal(applyWrap("say **** now", 6, 6, "**").doc, "say  now");
+});
+
+test("an empty selection in plain text inserts a pair and parks the caret inside", () => {
+  const e = wrapEdit("say  now", 4, 4, "**", "**");
+  assert.equal(e.insert, "****");
+  assert.equal(e.anchor, 6);
+  assert.equal(e.head, 6);
+});
+
+test("the Link button's asymmetric markers still insert", () => {
+  // `](https://)` is a template the author edits, so it never matches on the way
+  // back and the button stays an insert.
+  assert.equal(applyWrap("see docs", 4, 8, "[", "](https://)").doc, "see [docs](https://)");
 });
