@@ -375,6 +375,35 @@ test("a single asterisk or underscore is not reported — it is ordinary text", 
   assert.deepEqual(residualMarkers("2 * 3 = 6, see note *"), []);
 });
 
+test("emphasis spans a soft line break, the way the editor renders it", () => {
+  // The inline pass used to run per LINE, so a run across a newline could never
+  // match however the character classes were written — and CodeMirror highlighted
+  // it as bold, so the author saw bold and the post shipped asterisks.
+  assert.equal(flattenMd("**bold across\nlines**"), "bold across\nlines");
+  assert.equal(flattenMd("*italic across\nlines*"), "italic across\nlines");
+  assert.deepEqual(residualMarkers("**bold across\nlines**"), []);
+});
+
+test("emphasis does NOT span a blank line — that is two paragraphs", () => {
+  // CommonMark stops a run at a paragraph break, so these are four literal
+  // asterisks and the author needs to hear about them.
+  assert.equal(flattenMd("**para\n\nbreak**"), "**para\n\nbreak**");
+  assert.deepEqual(residualMarkers("**para\n\nbreak**"), ["**"]);
+});
+
+test("a single unclosed marker is reported too, not just a doubled one", () => {
+  // Only **, __ and ~~ were checked, so a whole unclosed italic run reached the
+  // composer with nothing on screen saying so.
+  assert.deepEqual(residualMarkers("*italic across lines still open"), ["*"]);
+  assert.deepEqual(residualMarkers("_underline that never closes"), ["_"]);
+});
+
+test("only an OPENER position counts, which is what keeps the warning quiet", () => {
+  assert.deepEqual(residualMarkers("2 * 3 = 6, see note *"), []);   // space after, then nothing after
+  assert.deepEqual(residualMarkers("ran collect_lock_test.mjs"), []); // mid-word
+  assert.deepEqual(residualMarkers("a ** b ** c"), []);              // not emphasis, not flagged
+});
+
 test("markers inside code are not strays — the author cannot fix what is correct", () => {
   // residualMarkers reads the SOURCE, because in flattened text a code span has
   // already been restored verbatim and its markers look identical to unclosed ones.
