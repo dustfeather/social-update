@@ -260,6 +260,19 @@ export function shareState(
   return { n, tooLong, noUrl, disabled: (tooLong && !target.soft) || noUrl, warn: tooLong && Boolean(target.soft) };
 }
 
+// The Markdown with its code taken out — fenced blocks dropped, code spans blanked.
+// Two callers below need this and both need it for the same reason: what sits inside
+// code is a string the author is QUOTING, not prose the app may act on. Neither can
+// get it from `flattenMd`, which restores fences verbatim on purpose, so by the time
+// text comes out of it a fenced `https://…` and a written-out link are the same bytes.
+function dropCode(md: string): string {
+  return splitFences(md)
+    .filter((p) => !p.code)
+    .map((p) => p.text)
+    .join("\n")
+    .replace(/(?<!\\)(`+)[\s\S]+?(?<!\\)\1/g, " ");
+}
+
 // Markers still standing after flattening. Every emphasis rule needs a matched
 // pair, so `**shipped the collector` — an author who started a bold run and never
 // closed it — passes through and reaches LinkedIn as literal asterisks.
@@ -277,12 +290,7 @@ export function shareState(
 // avoid. Code is dropped here rather than flattened, and so are backslash escapes:
 // `\*` is a literal asterisk the author asked for on purpose.
 export function residualMarkers(md: string): string[] {
-  const prose = splitFences(md)
-    .filter((p) => !p.code)
-    .map((p) => p.text)
-    .join("\n")
-    .replace(/(?<!\\)(`+)[\s\S]+?(?<!\\)\1/g, " ")
-    .replace(/\\[\\`*_{}[\]()#+\-.!~>]/g, " ");
+  const prose = dropCode(md).replace(/\\[\\`*_{}[\]()#+\-.!~>]/g, " ");
   // Flattening consumes every matched pair, so whatever survives is unpaired.
   // What counts as a stray is a run in OPENER position — at the start, or after
   // whitespace or `(` — with a non-space after it. That is CommonMark's
@@ -315,12 +323,15 @@ export function safeHref(url: string): string | null {
   return `https://${u}`; // bare domain
 }
 
-// First URL in the flattened post — Facebook's sharer only accepts a link, so
-// this is what it gets when the post mentions one. Deliberately run over the
-// FLATTENED text, not the Markdown: a url inside `[label](url)` is a real link
-// to share, and one inside a code fence is a string literal that is not.
-export function firstUrl(text: string): string | null {
-  return text.match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
+// First URL in the post — Facebook's sharer only accepts a link, so this is what
+// it gets when the post mentions one. Takes the MARKDOWN and drops the code first,
+// then flattens: a url inside `[label](url)` is a real link to share, and one
+// inside a fence or a code span is a string literal that is not. Scanning the
+// flattened text instead read them as equals, so a draft whose only url was a
+// `curl https://api.internal/x` line enabled the Facebook button and shared that
+// host.
+export function firstUrl(md: string): string | null {
+  return flattenMd(dropCode(md)).match(/https?:\/\/[^\s)]+/)?.[0] ?? null;
 }
 
 // The Markdown a draft should start from, for a draft written before Markdown
