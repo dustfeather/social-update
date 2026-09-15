@@ -5,7 +5,17 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
-import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX, isHostname, residualMarkers } from "./draft-text";
+import {
+  flattenMd,
+  firstUrl,
+  draftMd,
+  safeHref,
+  countGraphemes,
+  countForX,
+  isHostname,
+  residualMarkers,
+  shareState,
+} from "./draft-text";
 import { HighlightStyle } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import {
@@ -634,8 +644,9 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // because the networks disagree about what a character is.
   const chars = useMemo(() => countGraphemes(text), [text]);
   // Markers that outlived flattening — an unclosed bold run reaches the composer
-  // as literal asterisks. Shown, never repaired: see residualMarkers.
-  const strays = useMemo(() => residualMarkers(text), [text]);
+  // as literal asterisks. Shown, never repaired, and computed from the SOURCE so
+  // code spans are not mistaken for strays: see residualMarkers.
+  const strays = useMemo(() => residualMarkers(md), [md]);
   const postUrl = useMemo(() => firstUrl(text), [text]);
 
   function flash(set: (v: any) => void, value: any) {
@@ -832,17 +843,11 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
           // the button and say so, rather than opening a tab that drops the post.
           // Each network measures its own way — X bills any URL at 23 characters, the
           // rest count graphemes — so this is never the header's number for X.
-          const n = (s.count ?? countGraphemes)(text);
-          const tooLong = n > s.limit;
-          // A soft limit is a number we cannot actually verify for this user's server,
-          // so it warns and leaves the button live. Refusing a post the instance would
-          // have accepted is the worse error.
-          const noUrl = s.urlOnly && !postUrl;
-          const disabled = (tooLong && !s.soft) || noUrl;
+          const { n, tooLong, noUrl, disabled, warn } = shareState(s, text, postUrl);
           return (
             <button
               key={s.key}
-              className={`share-btn share-${s.key}${disabled ? " share-disabled" : ""}${tooLong && s.soft ? " share-warn" : ""}`}
+              className={`share-btn share-${s.key}${disabled ? " share-disabled" : ""}${warn ? " share-warn" : ""}`}
               disabled={disabled}
               onClick={() => share(s)}
               title={

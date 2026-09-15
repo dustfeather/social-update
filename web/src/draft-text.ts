@@ -48,12 +48,18 @@ function splitFences(md: string): Array<{ code: boolean; text: string }> {
   // END — so the lazy body stopped at the first newline, the block's remaining
   // lines were flattened as prose, and the closing fence matched again as a
   // second, empty block.
-  const re = /^[ \t]*(`{3,}|~{3,})[^\n]*\n([\s\S]*?)(?:^[ \t]*\1[ \t]*$|(?![\s\S]))/gm;
+  //
+  // The closing run may be LONGER than the opening one, which CommonMark allows and
+  // authors use to quote a block that itself contains three backticks. Matching the
+  // opening run exactly meant a block opened with ``` and closed with ```` was read
+  // as never closed, so the whole rest of the draft was swallowed as code. `\2` is
+  // the fence CHARACTER, captured separately so the tail cannot mix ` with ~.
+  const re = /^[ \t]*((`|~)\2{2,})[^\n]*\n([\s\S]*?)(?:^[ \t]*\1\2*[ \t]*$|(?![\s\S]))/gm;
   let last = 0;
   for (const m of md.matchAll(re)) {
     const start = m.index ?? 0;
     if (start > last) out.push({ code: false, text: md.slice(last, start) });
-    out.push({ code: true, text: m[2] });
+    out.push({ code: true, text: m[3] });
     last = start + m[0].length;
   }
   if (last < md.length) out.push({ code: false, text: md.slice(last) });
@@ -109,16 +115,26 @@ function flattenInline(s: string): string {
       // Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`.
       // The inner character class forbids the marker itself, which is what stops
       // a run spanning from one word's emphasis to another's.
-      .replace(/\*\*\*([^*]+)\*\*\*/g, "$1")
-      .replace(/___([^_]+)___/g, "$1")
-      .replace(/\*\*([^*]+)\*\*/g, "$1")
-      .replace(/__([^_]+)__/g, "$1")
-      .replace(/\*([^*\n]+)\*/g, "$1")
+      //
+      // Every rule also carries CommonMark's FLANKING condition: a run only opens
+      // when the character after it is not whitespace, and only closes when the
+      // character before it is not whitespace. Without it a pair of asterisks used
+      // as multiplication is read as emphasis and DELETED —
+      // `2 * 3 and 4 * 5` came out as `2  3 and 4  5`, losing two operators from a
+      // post that prompt.txt promises will keep every number exactly as given. It
+      // is the same class of false positive as snake_case, which the `_` rule below
+      // has always guarded against; the `*` rules simply never got the same care.
+      .replace(/\*\*\*(?![\s*])([^*\n]*[^\s*])\*\*\*/g, "$1")
+      .replace(/___(?![\s_])([^_\n]*[^\s_])___/g, "$1")
+      .replace(/\*\*(?![\s*])([^*\n]*[^\s*])\*\*/g, "$1")
+      .replace(/__(?![\s_])([^_\n]*[^\s_])__/g, "$1")
+      .replace(/\*(?![\s*])([^*\n]*[^\s*])\*/g, "$1")
       // `_italic_` only at a word boundary: snake_case_names are ordinary words
       // in this corpus (file paths, identifiers) and must survive intact.
       .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
-      // ~~struck~~ text was still written; the reader should still see it.
-      .replace(/~~([^~]+)~~/g, "$1")
+      // ~~struck~~ text was still written; the reader should still see it. Same
+      // flanking condition, for the same reason as the rules above.
+      .replace(/~~(?![\s~])([^~\n]*[^\s~])~~/g, "$1")
       // The escapes come back as the characters they were always meant to be.
       .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
       // The span's text returns exactly as written, minus its ticks — which is what a
@@ -188,9 +204,32 @@ export function flattenMd(md: string): string {
   return parts.map((p) => p.text).join("");
 }
 
-// An href safe to put on an <a>. javascript:/data: URLs are the whole reason this
-// exists — an anchor with a script URL is still script execution, one click later.
-// Markers still standing in FLATTENED text. Every emphasis rule needs a matched
+// Whether a share target can take this draft, and why not. Lifted out of the
+// button so the DECISION is testable: the counting underneath it was pinned but
+// the rule built on it was not, and the rule is the part a user actually hits.
+//
+// `soft` marks a limit we cannot verify for this user's server — a Mastodon
+// instance chooses its own, and the default is only a default. Refusing a post the
+// instance would have accepted is the worse error, so a soft limit warns and leaves
+// the button live.
+export interface ShareLimit {
+  limit: number;
+  soft?: boolean;
+  urlOnly?: boolean;
+  count?: (text: string) => number;
+}
+export function shareState(
+  target: ShareLimit,
+  text: string,
+  url: string | null,
+): { n: number; tooLong: boolean; noUrl: boolean; disabled: boolean; warn: boolean } {
+  const n = (target.count ?? countGraphemes)(text);
+  const tooLong = n > target.limit;
+  const noUrl = Boolean(target.urlOnly) && !url;
+  return { n, tooLong, noUrl, disabled: (tooLong && !target.soft) || noUrl, warn: tooLong && Boolean(target.soft) };
+}
+
+// Markers still standing after flattening. Every emphasis rule needs a matched
 // pair, so `**shipped the collector` — an author who started a bold run and never
 // closed it — passes through and reaches LinkedIn as literal asterisks.
 //
@@ -198,13 +237,30 @@ export function flattenMd(md: string): string {
 // guess: `2 * 3`, a footnote `*`, `snake_case` and an arithmetic underscore are
 // all legitimate text a "clean up the strays" pass would eat, and silently
 // editing someone's post to fix their typo is worse than showing them the typo.
-// Flattening has already run, so anything left here is unpaired by construction.
-export function residualMarkers(flattened: string): string[] {
+//
+// Takes the MARKDOWN, not the flattened text, because by then code spans and
+// fences have been restored verbatim and their markers are indistinguishable from
+// unclosed ones. `**kwargs` inside a code span is correct text the author cannot
+// change without breaking the code they meant to quote, and a warning pointing at
+// it is the false-positive version of the false repair this function exists to
+// avoid. Code is dropped here rather than flattened, and so are backslash escapes:
+// `\*` is a literal asterisk the author asked for on purpose.
+export function residualMarkers(md: string): string[] {
+  const prose = splitFences(md)
+    .filter((p) => !p.code)
+    .map((p) => p.text)
+    .join("\n")
+    .replace(/(?<!\\)(`+)[\s\S]+?(?<!\\)\1/g, " ")
+    .replace(/\\[\\`*_{}[\]()#+\-.!~>]/g, " ");
+  // Flattening consumes every matched pair, so whatever survives is unpaired.
+  const flat = flattenMd(prose);
   const found = new Set<string>();
-  for (const m of ["**", "__", "~~"]) if (flattened.includes(m)) found.add(m);
+  for (const m of ["**", "__", "~~"]) if (flat.includes(m)) found.add(m);
   return [...found];
 }
 
+// An href safe to put on an <a>. javascript:/data: URLs are the whole reason this
+// exists — an anchor with a script URL is still script execution, one click later.
 export function safeHref(url: string): string | null {
   const u = url.trim();
   if (/^(https?:|mailto:)/i.test(u)) return u;
