@@ -124,17 +124,17 @@ function flattenInline(s: string): string {
       // post that prompt.txt promises will keep every number exactly as given. It
       // is the same class of false positive as snake_case, which the `_` rule below
       // has always guarded against; the `*` rules simply never got the same care.
-      .replace(/\*\*\*(?![\s*])([^*\n]*[^\s*])\*\*\*/g, "$1")
-      .replace(/___(?![\s_])([^_\n]*[^\s_])___/g, "$1")
-      .replace(/\*\*(?![\s*])([^*\n]*[^\s*])\*\*/g, "$1")
-      .replace(/__(?![\s_])([^_\n]*[^\s_])__/g, "$1")
-      .replace(/\*(?![\s*])([^*\n]*[^\s*])\*/g, "$1")
+      .replace(/\*\*\*(?![\s*])([^*]*[^\s*])\*\*\*/g, "$1")
+      .replace(/___(?![\s_])([^_]*[^\s_])___/g, "$1")
+      .replace(/\*\*(?![\s*])([^*]*[^\s*])\*\*/g, "$1")
+      .replace(/__(?![\s_])([^_]*[^\s_])__/g, "$1")
+      .replace(/\*(?![\s*])([^*]*[^\s*])\*/g, "$1")
       // `_italic_` only at a word boundary: snake_case_names are ordinary words
       // in this corpus (file paths, identifiers) and must survive intact.
-      .replace(/(^|[\s(])_([^_\n]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
+      .replace(/(^|[\s(])_([^_]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
       // ~~struck~~ text was still written; the reader should still see it. Same
       // flanking condition, for the same reason as the rules above.
-      .replace(/~~(?![\s~])([^~\n]*[^\s~])~~/g, "$1")
+      .replace(/~~(?![\s~])([^~]*[^\s~])~~/g, "$1")
       // The escapes come back as the characters they were always meant to be.
       .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
       // The span's text returns exactly as written, minus its ticks — which is what a
@@ -162,10 +162,38 @@ function flattenLine(line: string): string {
   // composer and is what the old HTML path produced for <li>. Indentation is
   // preserved so a nested list still looks nested.
   const bullet = s.match(/^([ \t]*)[*+-][ \t]+(.*)$/);
-  if (bullet) return `${bullet[1]}- ${flattenInline(bullet[2])}`;
+  if (bullet) return `${bullet[1]}- ${bullet[2]}`;
   const ordered = s.match(/^([ \t]*)(\d+)[.)][ \t]+(.*)$/);
-  if (ordered) return `${ordered[1]}${ordered[2]}. ${flattenInline(ordered[3])}`;
-  return flattenInline(s);
+  if (ordered) return `${ordered[1]}${ordered[2]}. ${ordered[3]}`;
+  return s;
+}
+
+// Inline rules run over a PARAGRAPH, not a line. They used to run inside
+// flattenLine, once per line, so a run could never be matched across a soft line
+// break however the character classes were written: `**bold across\nlines**` was
+// two lines, each holding one unmatched `**`. CommonMark allows emphasis to span a
+// soft break, and the editor's own highlighter renders it bold — so the author saw
+// bold and the post shipped asterisks.
+//
+// A paragraph is the right unit rather than the whole segment, because emphasis may
+// NOT span a blank line: `**a\n\nb**` is two paragraphs and four literal asterisks,
+// and running the rules over the joined segment would silently join them.
+function flattenParagraphs(lines: string[]): string[] {
+  const out: string[] = [];
+  let para: string[] = [];
+  const flush = () => {
+    if (para.length) out.push(...flattenInline(para.join("\n")).split("\n"));
+    para = [];
+  };
+  for (const line of lines) {
+    if (line.trim()) para.push(line);
+    else {
+      flush();
+      out.push(line);
+    }
+  }
+  flush();
+  return out;
 }
 
 // Markdown in, the exact bytes a social composer should receive out.
@@ -192,7 +220,10 @@ export function flattenMd(md: string): string {
     // over the joined document it reaches inside the fences, where a blank run
     // and a trailing space are content, not residue. A segment boundary is a
     // fence, so there is no blank run spanning one to collapse.
-    return { code: false, text: out.join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n") };
+    return {
+      code: false,
+      text: flattenParagraphs(out).join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n"),
+    };
   });
   // Trim the document's outer whitespace, but only where the edge is prose. A
   // draft that opens or closes with a code block keeps that block's own leading
@@ -253,9 +284,24 @@ export function residualMarkers(md: string): string[] {
     .replace(/(?<!\\)(`+)[\s\S]+?(?<!\\)\1/g, " ")
     .replace(/\\[\\`*_{}[\]()#+\-.!~>]/g, " ");
   // Flattening consumes every matched pair, so whatever survives is unpaired.
+  // What counts as a stray is a run in OPENER position — at the start, or after
+  // whitespace or `(` — with a non-space after it. That is CommonMark's
+  // left-flanking test, the same condition the rules themselves use, and it is
+  // what keeps the warning off the text it has no business flagging: `2 * 3` has a
+  // space after the asterisk, a trailing footnote `*` has nothing after it, and
+  // `snake_case`'s underscore is mid-word rather than in opener position.
+  //
+  // Single `*` and `_` are included. Only `**`/`__`/`~~` were checked before, so
+  // `*italic across` — a whole unclosed italic run — reached the composer with the
+  // asterisk visible and nothing on screen saying so.
+  //
+  // It is not free of false positives: a leading glob like `*.ts` written outside
+  // backticks reads as an opener and will be flagged. That is the acceptable
+  // direction — the warning changes nothing about the draft, and prompt.txt asks
+  // for identifiers in backticks, which this function already excludes.
   const flat = flattenMd(prose);
   const found = new Set<string>();
-  for (const m of ["**", "__", "~~"]) if (flat.includes(m)) found.add(m);
+  for (const m of flat.matchAll(/(?:^|[\s(])(\*{1,3}|_{1,3}|~{2})(?=[^\s*_~])/g)) found.add(m[1]);
   return [...found];
 }
 

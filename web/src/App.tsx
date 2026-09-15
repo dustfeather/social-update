@@ -649,7 +649,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   const strays = useMemo(() => residualMarkers(md), [md]);
   const postUrl = useMemo(() => firstUrl(text), [text]);
 
-  function flash(set: (v: any) => void, value: any) {
+  function flash<T>(set: (v: T | null) => void, value: T) {
     set(value);
     setTimeout(() => set(null), 1500);
   }
@@ -671,10 +671,10 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
     }
   }
 
-  // `host` overrides the state value: saveInstance resumes the share that opened the
+  // `instanceOverride` beats the state value: saveInstance resumes the share that opened the
   // prompt, and it runs before React has re-rendered with the new instance.
-  function share(s: (typeof SHARES)[number], host?: string) {
-    const useInstance = host ?? instance;
+  function share(s: (typeof SHARES)[number], instanceOverride?: string) {
+    const useInstance = instanceOverride ?? instance;
     if (s.needsInstance && !useInstance) {
       openInstancePrompt(s.key); // resume this one once the instance is known
       return;
@@ -757,9 +757,9 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
         {strays.length > 0 && (
           <span
             className="stray-markers"
-            title={`Unclosed ${strays.join(" and ")} — this reaches the post as literal characters. Close it, or delete it if you meant it literally.`}
+            title={`${strays.join(" and ")} opens emphasis that does not close in its paragraph, so it reaches the post as literal characters. Close it, delete it, or escape it if you meant it literally.`}
           >
-            {strays.join(" ")} unclosed
+            {strays.join(" ")} literal
           </span>
         )}
         <button onClick={() => copy("post")} title="Copy the post as plain text, ready to paste">
