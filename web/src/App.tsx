@@ -491,10 +491,13 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
   const first = view.state.doc.lineAt(from).number;
   const last = view.state.doc.lineAt(to).number;
   const changes = [];
-  for (let n = first, i = 0; n <= last; n++, i++) {
+  // `i` advances only where a prefix is actually inserted. Incrementing it in the
+  // for-update ran on `continue` too, so a skipped blank line burned a number and
+  // `one / blank / two` numbered 1, 3. The bullet case ignores `i` either way.
+  for (let n = first, i = 0; n <= last; n++) {
     const line = view.state.doc.line(n);
     if (!line.text.trim() && first !== last) continue; // don't bullet the blank lines in a block
-    changes.push({ from: line.from, insert: prefix(i) });
+    changes.push({ from: line.from, insert: prefix(i++) });
   }
   view.dispatch({ changes, scrollIntoView: true });
   view.focus();
@@ -502,7 +505,7 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
 
 function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) => void }) {
   const [copied, setCopied] = useState<"post" | "md" | null>(null);
-  const [shared, setShared] = useState<string | null>(null);
+  const [shared, setShared] = useState<{ key: string; copyFailed: boolean } | null>(null);
   const [instanceOpen, setInstanceOpen] = useState(false);
   const [instance, setInstance] = useState(readInstance);
   const host = useRef<HTMLDivElement | null>(null);
@@ -596,8 +599,20 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
     // unfocused document can leave writeText pending forever, which looks like a
     // dead button. Copy afterwards, best-effort.
     window.open(href, "_blank", "noopener,noreferrer");
-    navigator.clipboard.writeText(text).catch(() => {});
-    flash(setShared, s.key);
+    // "Opened" is the only claim that can be made synchronously, and it is true:
+    // the composer window opened. The copy is asynchronous and best-effort, so it
+    // reports separately rather than being folded into this flash — the button used
+    // to say "Opened ✓" beside a hint promising the post was on the clipboard, while
+    // a rejected write was swallowed. On the targets that do not prefill (Facebook
+    // gets a bare URL, LinkedIn often comes up empty) the user follows that hint and
+    // pastes whatever was on the clipboard before.
+    flash(setShared, { key: s.key, copyFailed: false });
+    navigator.clipboard.writeText(text).catch(() => {
+      // Only a REJECTED write flips this, never a pending one: an unfocused document
+      // can leave writeText pending forever, so waiting for it before showing anything
+      // is what makes the button look dead.
+      setShared((cur) => (cur && cur.key === s.key ? { ...cur, copyFailed: true } : cur));
+    });
   }
 
   function saveInstance() {
@@ -708,14 +723,15 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
                       : `Copy the text and open ${s.label}`
               }
             >
-              {shared === s.key ? "Opened ✓" : s.label}
+              {shared?.key === s.key ? (shared.copyFailed ? "Opened — copy failed" : "Opened ✓") : s.label}
             </button>
           );
         })}
         <span className="hint share-hint">
-          The post is copied to your clipboard first — Facebook (and sometimes LinkedIn) won't
-          prefill it, so paste into the composer. A greyed target is over its length limit, or
-          takes a link this draft doesn't have.
+          The post is copied to your clipboard where the browser allows it — Facebook (and
+          sometimes LinkedIn) won't prefill it, so paste into the composer. If a button says
+          "copy failed", use Copy post before pasting. A greyed target is over its length
+          limit, or takes a link this draft doesn't have.
         </span>
       </div>
     </article>

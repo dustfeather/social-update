@@ -150,7 +150,10 @@ function weekGit(): string[] {
 }
 
 // ---- Opus draft generation -------------------------------------------------
-interface Draft { angle: string; text: string; }
+// Markdown, matching prompt.txt — the same file the web app's generator uses, so
+// the two consumers stay on one contract. This sink WANTS the Markdown raw rather
+// than flattened: it writes into an Obsidian weekly note, which renders it.
+interface Draft { angle: string; md: string; }
 function generate(digests: string[], git: string[], manual: string): Draft[] {
   let prompt = fs.readFileSync(PROMPT_TXT, "utf8").trim() + "\n\n";
   prompt += `=== INPUT — ISO week ${WEEK_LABEL} ===\n`;
@@ -170,16 +173,16 @@ function generate(digests: string[], git: string[], manual: string): Draft[] {
   const result = (() => { try { return JSON.parse(envLine).result ?? ""; } catch { return ""; } })();
   const jsonText = result.replace(/^[\s\S]*?(\[[\s\S]*\])[\s\S]*$/, "$1");
   const drafts = JSON.parse(jsonText) as Draft[];
-  if (!Array.isArray(drafts) || !drafts.every((d) => d && typeof d.text === "string"))
+  if (!Array.isArray(drafts) || !drafts.every((d) => d && typeof d.md === "string"))
     throw new Error("generate: model did not return a valid draft array");
-  return drafts.filter((d) => d.text.trim());
+  return drafts.filter((d) => d.md.trim());
 }
 
 // ---- weekly note (managed drafts block, preserved manual block) ------------
 function upsertDrafts(drafts: Draft[]) {
   const draftsBlock =
     `${DRAFTS_START}\n## LinkedIn drafts — week ${WEEK_LABEL}\n\n` +
-    drafts.map((d, i) => `### Draft ${i + 1} — ${d.angle?.trim() || "post"}\n\n${d.text.trim()}\n`).join("\n---\n\n") +
+    drafts.map((d, i) => `### Draft ${i + 1} — ${d.angle?.trim() || "post"}\n\n${d.md.trim()}\n`).join("\n---\n\n") +
     `\n${DRAFTS_END}`;
 
   let body = readVault(WEEKLY_REL);
