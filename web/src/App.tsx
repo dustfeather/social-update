@@ -3,7 +3,7 @@ import { EditorState } from "@codemirror/state";
 import { EditorView, keymap } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
-import { syntaxHighlighting } from "@codemirror/language";
+import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
 import {
   flattenMd,
@@ -16,8 +16,7 @@ import {
   residualMarkers,
   shareState,
 } from "./draft-text";
-import { HighlightStyle } from "@codemirror/language";
-import { tags as t } from "@lezer/highlight";
+import { tags } from "@lezer/highlight";
 import {
   fetchWeeks,
   fetchItems,
@@ -569,21 +568,21 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
 }
 
 // The editor is dark-only (--bg #0f1115), and @codemirror/language's
-// defaultHighlightStyle is built for a light background: in it t.url, t.labelName and
-// t.contentSeparator are #219, which lands at roughly 1.4:1 on this background. That is
+// defaultHighlightStyle is built for a light background: in it tags.url, tags.labelName and
+// tags.contentSeparator are #219, which lands at roughly 1.4:1 on this background. That is
 // the URL inside [label](url) — the exact text the Link button inserts — rendered
 // effectively invisible. These colours come from the app's own palette instead.
 const mdHighlight = HighlightStyle.define([
-  { tag: t.heading, color: "#e6e8ec", fontWeight: "600" },
-  { tag: t.strong, color: "#e6e8ec", fontWeight: "700" },
-  { tag: t.emphasis, color: "#e6e8ec", fontStyle: "italic" },
-  { tag: t.strikethrough, color: "#8b90a0", textDecoration: "line-through" },
-  { tag: [t.link, t.labelName], color: "#7aa2f7" },
-  { tag: t.url, color: "#7aa2f7", textDecoration: "underline" },
-  { tag: [t.monospace, t.string], color: "#9ece6a" },
-  { tag: [t.list, t.quote], color: "#8b90a0" },
-  { tag: t.contentSeparator, color: "#8b90a0" },
-  { tag: [t.processingInstruction, t.meta], color: "#6b7080" },
+  { tag: tags.heading, color: "#e6e8ec", fontWeight: "600" },
+  { tag: tags.strong, color: "#e6e8ec", fontWeight: "700" },
+  { tag: tags.emphasis, color: "#e6e8ec", fontStyle: "italic" },
+  { tag: tags.strikethrough, color: "#8b90a0", textDecoration: "line-through" },
+  { tag: [tags.link, tags.labelName], color: "#7aa2f7" },
+  { tag: tags.url, color: "#7aa2f7", textDecoration: "underline" },
+  { tag: [tags.monospace, tags.string], color: "#9ece6a" },
+  { tag: [tags.list, tags.quote], color: "#8b90a0" },
+  { tag: tags.contentSeparator, color: "#8b90a0" },
+  { tag: [tags.processingInstruction, tags.meta], color: "#6b7080" },
 ]);
 
 function DraftCard({
@@ -783,7 +782,7 @@ function DraftCard({
         {strays.length > 0 && (
           <span
             className="stray-markers"
-            title={`${strays.join(" and ")} opens emphasis that does not close in its paragraph, so it reaches the post as literal characters. Close it, delete it, or escape it if you meant it literally.`}
+            title={`${strays.join(" and ")} is not consumed by the formatting — an emphasis run that never closes in its paragraph, or an empty pair like ****, so it reaches the post as literal characters. Close it, fill it, delete it, or escape it if you meant it literally.`}
           >
             {strays.join(" ")} literal
           </span>
