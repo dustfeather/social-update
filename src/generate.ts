@@ -48,9 +48,16 @@ function parseDrafts(result: string): Draft[] {
   if (fence) s = fence[1].trim();
   const arr = JSON.parse(s);
   if (!Array.isArray(arr)) throw new Error("model output was not a JSON array");
-  return arr
-    .filter((d) => d && typeof d.md === "string")
-    .map((d) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
+  const kept = arr.filter((d) => d && typeof d.md === "string");
+  // An array that had elements and kept none is a CONTRACT break, not a quiet
+  // week: prompt.txt asks for `md` and every element arrived in some other shape.
+  // Returning [] here reaches the UI as "not enough material this week", which
+  // sends the next reader to the collector instead of to the prompt.
+  if (arr.length && !kept.length) {
+    const keys = [...new Set(arr.flatMap((d) => (d && typeof d === "object" ? Object.keys(d) : [typeof d])))];
+    throw new Error(`model returned ${arr.length} draft(s), none with an \`md\` field — got keys: ${keys.join(", ")}`);
+  }
+  return kept.map((d) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
 }
 
 // tags is a JSON array written by the tagging pass; NULL until a run tags it.

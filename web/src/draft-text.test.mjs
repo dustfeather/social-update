@@ -138,6 +138,25 @@ test("a fenced block's contents are passed through untouched", () => {
   assert.match(out, /after$/);
 });
 
+test("a fence keeps its blank runs and trailing spaces, which the prose rules strip", () => {
+  // The two cleanups that run over prose — collapsing blank runs and trimming
+  // trailing whitespace — are exactly what a code block must not receive. The
+  // fixture above has neither, so it could not have caught this: the block is
+  // whitespace-sensitive on purpose.
+  const md = "before\n\n```py\ndef a():\n    pass   \n\n\ndef b():\n    pass\n```\n\nafter";
+  assert.equal(flattenMd(md), "before\n\ndef a():\n    pass   \n\n\ndef b():\n    pass\n\nafter");
+});
+
+test("a draft that is only a code block keeps its own indentation", () => {
+  // The outer trim is what would eat this, so it applies only where the edge is
+  // prose. An author pasting an indented snippet gets the snippet back.
+  assert.equal(flattenMd("```\n    indented\n```"), "    indented");
+});
+
+test("prose around a fence is still collapsed and trimmed", () => {
+  assert.equal(flattenMd("\n\n# title\n\n\n\nbefore   \n\n```\nx\n```\n\n\n"), "title\n\nbefore\n\nx");
+});
+
 test("an unterminated fence still yields its contents rather than swallowing the rest", () => {
   assert.match(flattenMd("intro\n\n```\n*kept*"), /\*kept\*/);
 });

@@ -155,7 +155,7 @@ function flattenLine(line: string): string {
 // Markdown in, the exact bytes a social composer should receive out.
 export function flattenMd(md: string): string {
   const parts = splitFences(md).map((part) => {
-    if (part.code) return part.text.replace(/\n+$/, "");
+    if (part.code) return { code: true, text: part.text.replace(/\n+$/, "") };
     const lines = part.text.split("\n");
     // A setext underline (=== or ---) belongs to the line above it, which the
     // heading rules never see because it is on its own line. Drop the underline
@@ -171,11 +171,21 @@ export function flattenMd(md: string): string {
       }
       out.push(flattenLine(lines[i]));
     }
-    return out.join("\n");
+    // Collapse the blank runs the stripping leaves behind — a removed rule or
+    // heading turns one blank line into three. Scoped to THIS prose segment: run
+    // over the joined document it reaches inside the fences, where a blank run
+    // and a trailing space are content, not residue. A segment boundary is a
+    // fence, so there is no blank run spanning one to collapse.
+    return { code: false, text: out.join("\n").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n") };
   });
-  // Collapse the blank runs the stripping leaves behind — a removed rule or
-  // heading turns one blank line into three.
-  return parts.join("").replace(/[ \t]+$/gm, "").replace(/\n{3,}/g, "\n\n").trim();
+  // Trim the document's outer whitespace, but only where the edge is prose. A
+  // draft that opens or closes with a code block keeps that block's own leading
+  // indentation and blank lines — trimming the joined string would eat them.
+  const first = parts[0];
+  if (first && !first.code) first.text = first.text.replace(/^\s+/, "");
+  const last = parts[parts.length - 1];
+  if (last && !last.code) last.text = last.text.replace(/\s+$/, "");
+  return parts.map((p) => p.text).join("");
 }
 
 // An href safe to put on an <a>. javascript:/data: URLs are the whole reason this
