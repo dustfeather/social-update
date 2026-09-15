@@ -5,7 +5,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
-import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX } from "./draft-text";
+import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX, isHostname } from "./draft-text";
 import { HighlightStyle } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import {
@@ -544,6 +544,12 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   const [instanceOpen, setInstanceOpen] = useState(false);
   const pendingShare = useRef<string | null>(null);
   const [instance, setInstance] = useState(readInstance);
+  // The input edits a DRAFT, never the committed value. Binding it straight to
+  // `instance` meant every keystroke was live: typing "mastodon.soc" and pressing
+  // Cancel left that as the instance, and because it is non-empty the prompt never
+  // reopened — the next Mastodon share went to a host that does not resolve.
+  const [instanceDraft, setInstanceDraft] = useState("");
+  const [instanceError, setInstanceError] = useState<string | null>(null);
   const host = useRef<HTMLDivElement | null>(null);
   const view = useRef<EditorView | null>(null);
 
@@ -634,8 +640,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   function share(s: (typeof SHARES)[number], host?: string) {
     const useInstance = host ?? instance;
     if (s.needsInstance && !useInstance) {
-      pendingShare.current = s.key; // resume this one once the instance is known
-      setInstanceOpen(true);
+      openInstancePrompt(s.key); // resume this one once the instance is known
       return;
     }
     const href = s.href(text, useInstance);
@@ -661,9 +666,24 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
     });
   }
 
+  // Opening always seeds the draft from the committed value, so editing an existing
+  // instance starts from what is actually in use rather than from blank.
+  function openInstancePrompt(forShare?: string) {
+    setInstanceDraft(instance);
+    setInstanceError(null);
+    pendingShare.current = forShare ?? null;
+    setInstanceOpen(true);
+  }
+
   function saveInstance() {
-    const h = instance.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
-    if (!h) return; // an empty host would build https:///share
+    const h = instanceDraft.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "");
+    if (!isHostname(h)) {
+      // Refuse in place instead of closing: an empty host would build https:///share,
+      // and a malformed one opens a tab on a name that cannot resolve, with the draft
+      // gone. Neither failure tells the user what went wrong, so this one does.
+      setInstanceError(h ? `"${h}" is not a hostname — try mastodon.social` : "Enter your instance's hostname");
+      return;
+    }
     setInstance(h);
     try {
       localStorage.setItem(MASTODON_KEY, h);
@@ -671,6 +691,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       /* not remembering it costs one retype, not the share */
     }
     setInstanceOpen(false);
+    setInstanceError(null);
     // Resume the share this prompt interrupted, rather than making the user click the
     // same button again — the first Mastodon share always cost two clicks. This runs
     // inside the Save button's own click, so window.open still has user activation.
@@ -681,6 +702,16 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       if (s) share(s, h);
     }
   }
+
+  // Cancel throws the draft away. The committed instance is untouched, which is the
+  // whole point of keeping them apart.
+  function cancelInstance() {
+    setInstanceOpen(false);
+    setInstanceError(null);
+    setInstanceDraft(instance);
+    pendingShare.current = null;
+  }
+
 
   return (
     <article className="card">
@@ -736,9 +767,14 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
         <div className="linkbar">
           <input
             autoFocus
-            value={instance}
+            value={instanceDraft}
             placeholder="mastodon.social"
-            onChange={(e) => setInstance(e.target.value)}
+            aria-label="Your Mastodon instance hostname"
+            aria-invalid={instanceError ? true : undefined}
+            onChange={(e) => {
+              setInstanceDraft(e.target.value);
+              setInstanceError(null); // typing is the correction; stop shouting about it
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") {
                 e.preventDefault();
@@ -746,12 +782,13 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
               }
               if (e.key === "Escape") {
                 e.preventDefault();
-                setInstanceOpen(false);
+                cancelInstance();
               }
             }}
           />
           <button onClick={saveInstance}>Save instance</button>
-          <button onClick={() => setInstanceOpen(false)}>Cancel</button>
+          <button onClick={cancelInstance}>Cancel</button>
+          {instanceError && <span className="instance-error">{instanceError}</span>}
         </div>
       )}
 
@@ -791,6 +828,16 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
             </button>
           );
         })}
+        {instance && (
+          <button
+            type="button"
+            className="instance-edit"
+            onClick={() => openInstancePrompt()}
+            title={`Posting to ${instance} — click to change it`}
+          >
+            {instance} ✎
+          </button>
+        )}
         <span className="hint share-hint">
           The post is copied to your clipboard where the browser allows it — Facebook (and
           sometimes LinkedIn) won't prefill it, so paste into the composer. If a button says

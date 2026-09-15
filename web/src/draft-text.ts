@@ -249,3 +249,14 @@ const TCO_LENGTH = 23;
 export function countForX(text: string): number {
   return countGraphemes(text.replace(/https?:\/\/[^\s)]+/g, "x".repeat(TCO_LENGTH)));
 }
+
+// A bare hostname, for the Mastodon instance the user types. It is deliberately not a
+// URL parser: the value is interpolated into `https://<host>/share`, so anything with a
+// scheme, a path, a space or an empty label must not reach it.
+//
+// This cannot catch a TYPO in a plausible host — `mastodon.socail` is a well-formed
+// hostname that does not exist, and no local check will ever say otherwise. It catches
+// the shapes that could never work; the UI's edit affordance is what fixes the rest.
+export function isHostname(host: string): boolean {
+  return /^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/i.test(host);
+}
