@@ -17,7 +17,7 @@ import {
   shareState,
   lastSelectedLine,
   wrapEdit,
-  listLine,
+  listEdits,
   hasPlaceholderLink,
 } from "./draft-text";
 import { createSaveLifecycle, type SaveLifecycle } from "./save-lifecycle";
@@ -604,17 +604,15 @@ function prefixLines(view: EditorView, prefix: (i: number) => string) {
   const { from, to } = view.state.selection.main;
   const first = view.state.doc.lineAt(from).number;
   const last = lastSelectedLine(from, to, view.state.doc.lineAt(to));
-  const changes = [];
-  // `i` advances only where a prefix is actually inserted. Incrementing it in the
-  // for-update ran on `continue` too, so a skipped blank line burned a number and
-  // `one / blank / two` numbered 1, 3. The bullet case ignores `i` either way.
-  for (let n = first, i = 0; n <= last; n++) {
-    const line = view.state.doc.line(n);
-    if (!line.text.trim() && first !== last) continue; // don't bullet the blank lines in a block
-    // A whole-line replacement rather than an insertion, because the button has to
-    // be able to take a marker OFF as well as put one on — see listLine.
-    changes.push({ from: line.from, to: line.to, insert: listLine(line.text, prefix(i++)) });
-  }
+  const lines: { from: number; to: number; text: string }[] = [];
+  for (let n = first; n <= last; n++) lines.push(view.state.doc.line(n));
+  // Whole-line replacements rather than insertions, because the button has to be able
+  // to take a marker OFF as well as put one on. Which lines change, and where the
+  // numbering goes, is listEdits' decision — see there.
+  const changes = listEdits(
+    lines.map((l) => l.text),
+    prefix,
+  ).map((e) => ({ from: lines[e.index].from, to: lines[e.index].to, insert: e.text }));
   view.dispatch({ changes, scrollIntoView: true });
   view.focus();
 }
