@@ -24,6 +24,33 @@ test("a run of emphasis does not span from one word to the next", () => {
   assert.equal(flattenMd("**one** plain **two**"), "one plain two");
 });
 
+test("emphasis nested inside emphasis is flattened, in both nesting orders", () => {
+  // The rules run longest-run-first and once each, so the OUTER pair used to be
+  // stranded: `[^*]*` forbids a marker inside the run, the `**` rule found nothing
+  // across `*new*`, and by the time the `*` rule removed the inner pair the `**`
+  // rule had had its turn. Only this direction failed — `*a **b** c*` always worked,
+  // because there the innermost markers belong to the rule that runs first.
+  assert.equal(flattenMd("**shipped the *new* collector**"), "shipped the new collector");
+  assert.equal(flattenMd("*a **b** c*"), "a b c");
+  assert.equal(flattenMd("__a _b_ c__"), "a b c");
+  assert.equal(flattenMd("~~dropped *the* idea~~"), "dropped the idea");
+});
+
+test("nesting resolved means nothing is left for the stray warning to report", () => {
+  // The warning used to fire on the outer pair and tell the author the run "does not
+  // close in its paragraph" — false, and it pointed at a typo they had not made.
+  assert.deepEqual(residualMarkers("**shipped the *new* collector**"), []);
+});
+
+test("running the rules to a fixed point does not loosen the flanking guards", () => {
+  // A rule that matched nothing on the first pass matches nothing on the second, so
+  // the loop is a no-op on text with no emphasis in it. These are the cases the
+  // flanking conditions exist for, re-asserted against the looping version.
+  assert.equal(flattenMd("2 * 3 and 4 * 5 and 6 * 7"), "2 * 3 and 4 * 5 and 6 * 7");
+  assert.equal(flattenMd("snake_case_name and another_one_here"), "snake_case_name and another_one_here");
+  assert.equal(flattenMd("a * b ** c"), "a * b ** c");
+});
+
 test("snake_case survives — an underscore pair is only emphasis at a word boundary", () => {
   assert.equal(flattenMd("ran collect_lock_test.mjs today"), "ran collect_lock_test.mjs today");
   assert.equal(flattenMd("the _real_ fix"), "the real fix");

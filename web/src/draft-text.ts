@@ -76,10 +76,57 @@ function splitFences(md: string): Array<{ code: boolean; text: string }> {
 // rules, and it is restored once they have all run.
 const ESC_OPEN = "\u0000";
 const CODE_OPEN = "\u0001";
+// Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`. The
+// inner character class forbids the marker itself, which is what stops a run
+// spanning from one word's emphasis to another's.
+//
+// Every rule also carries CommonMark's FLANKING condition: a run only opens when
+// the character after it is not whitespace, and only closes when the character
+// before it is not whitespace. Without it a pair of asterisks used as
+// multiplication is read as emphasis and DELETED — `2 * 3 and 4 * 5` came out as
+// `2  3 and 4  5`, losing two operators from a post that prompt.txt promises will
+// keep every number exactly as given. It is the same class of false positive as
+// snake_case, which the `_` rule guards against; the `*` rules simply never got
+// the same care.
+//
+// Applied ONCE each, the group cannot flatten NESTED emphasis, and it fails in
+// only one of the two directions — which is why it survived so long. `[^*]*`
+// forbids a marker inside the run, so on `**shipped the *new* collector**` the
+// `**` rule finds nothing; the `*` rule then takes `*new*`, but `**` has had its
+// turn and the outer pair reaches the composer as literal asterisks. The reverse
+// nesting `*a **b** c*` works, because there the rule that runs first is the one
+// whose markers are innermost.
+//
+// Re-running the whole group until the string stops changing fixes both
+// directions without loosening the flanking conditions, which is what keeps the
+// arithmetic and snake_case cases out of it: a rule that matched nothing on the
+// first pass matches nothing on the second either, so the loop is a no-op on text
+// with no emphasis in it. It terminates because every rewrite deletes at least
+// two characters, so a changed string is strictly shorter than the one before it.
+function stripEmphasis(text: string): string {
+  let s = text;
+  for (let prev = ""; s !== prev; ) {
+    prev = s;
+    s = s
+      .replace(/\*\*\*(?![\s*])([^*]*[^\s*])\*\*\*/g, "$1")
+      .replace(/___(?![\s_])([^_]*[^\s_])___/g, "$1")
+      .replace(/\*\*(?![\s*])([^*]*[^\s*])\*\*/g, "$1")
+      .replace(/__(?![\s_])([^_]*[^\s_])__/g, "$1")
+      .replace(/\*(?![\s*])([^*]*[^\s*])\*/g, "$1")
+      // `_italic_` only at a word boundary: snake_case_names are ordinary words
+      // in this corpus (file paths, identifiers) and must survive intact.
+      .replace(/(^|[\s(])_([^_]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
+      // ~~struck~~ text was still written; the reader should still see it. Same
+      // flanking condition, for the same reason as the rules above.
+      .replace(/~~(?![\s~])([^~]*[^\s~])~~/g, "$1");
+  }
+  return s;
+}
+
 function flattenInline(s: string): string {
   const escaped: string[] = [];
   const spans: string[] = [];
-  return (
+  const linked = (
     s
       // Code spans come out FIRST, before any rule that rewrites content. They used to
       // be stripped near the end, after the image/link/autolink rules had already run
@@ -112,29 +159,11 @@ function flattenInline(s: string): string {
       })
       // <https://x.dev> autolinks carry no label at all.
       .replace(/<((?:https?|mailto):[^>\s]+)>/g, "$1")
-      // Emphasis. Longest run first — `***x***` must not be read as `*` + `**x**`.
-      // The inner character class forbids the marker itself, which is what stops
-      // a run spanning from one word's emphasis to another's.
-      //
-      // Every rule also carries CommonMark's FLANKING condition: a run only opens
-      // when the character after it is not whitespace, and only closes when the
-      // character before it is not whitespace. Without it a pair of asterisks used
-      // as multiplication is read as emphasis and DELETED —
-      // `2 * 3 and 4 * 5` came out as `2  3 and 4  5`, losing two operators from a
-      // post that prompt.txt promises will keep every number exactly as given. It
-      // is the same class of false positive as snake_case, which the `_` rule below
-      // has always guarded against; the `*` rules simply never got the same care.
-      .replace(/\*\*\*(?![\s*])([^*]*[^\s*])\*\*\*/g, "$1")
-      .replace(/___(?![\s_])([^_]*[^\s_])___/g, "$1")
-      .replace(/\*\*(?![\s*])([^*]*[^\s*])\*\*/g, "$1")
-      .replace(/__(?![\s_])([^_]*[^\s_])__/g, "$1")
-      .replace(/\*(?![\s*])([^*]*[^\s*])\*/g, "$1")
-      // `_italic_` only at a word boundary: snake_case_names are ordinary words
-      // in this corpus (file paths, identifiers) and must survive intact.
-      .replace(/(^|[\s(])_([^_]+)_(?=[\s).,;:!?]|$)/g, "$1$2")
-      // ~~struck~~ text was still written; the reader should still see it. Same
-      // flanking condition, for the same reason as the rules above.
-      .replace(/~~(?![\s~])([^~]*[^\s~])~~/g, "$1")
+  );
+  return (
+    // Emphasis is the one group that has to run to a FIXED POINT rather than once
+    // through — see stripEmphasis for why, and for why looping cannot loosen it.
+    stripEmphasis(linked)
       // The escapes come back as the characters they were always meant to be.
       .replace(new RegExp(`${ESC_OPEN}(\\d+)${ESC_OPEN}`, "g"), (_m, i: string) => escaped[Number(i)])
       // The span's text returns exactly as written, minus its ticks — which is what a
