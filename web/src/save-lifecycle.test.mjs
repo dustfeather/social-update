@@ -130,3 +130,15 @@ test("a remount re-arms the lifecycle, the way StrictMode's double-invoke does",
   clock.run();
   assert.equal(r.calls[0](), true);
 });
+
+test("regenerating replaces the row, so the old row's save may not report either", () => {
+  const clock = fakeClock();
+  // The scope is week AND row: regenerating stays in the same week, so a week-only
+  // scope let the old row's result paint "saved ✓" over a never-saved new set.
+  const lc = createSaveLifecycle(800, "2026-W37:41", clock);
+  const r = recorder();
+  lc.schedule(r.run);
+  clock.run();
+  lc.setScope("2026-W37:42");
+  assert.equal(r.calls[0](), false);
+});

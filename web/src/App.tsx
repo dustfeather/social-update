@@ -187,6 +187,9 @@ export default function App() {
   }
 
   async function onGenerate() {
+    // Like selectWeek: the row is about to be replaced, so write the pending edit to
+    // the one it belongs to rather than leaving it to a timer that fires afterwards.
+    lifecycle.flush();
     setGenerating(true);
     setError(null);
     try {
@@ -220,19 +223,25 @@ export default function App() {
   // the whole array so a change to any card restarts the same one.
   //
   // The ordering around that debounce — flush on a week switch rather than cancel,
-  // and refuse to report a result whose week is no longer on screen — lives in
+  // and refuse to report a result whose week or row is no longer on screen — lives in
   // save-lifecycle.ts, where a test can drive the clock. Switching weeks used to
   // leave the timer running: it saved the right row, because the draft id is
   // captured, and then set saveState against the week the author had moved to, so
   // week B's header read "saved ✓", or carried week A's error string, for an edit
   // never made there.
   const latest = useRef<Draft[]>([]);
+  // Week AND row. The week alone is too coarse: regenerating stays in the same week
+  // but replaces the row, so a save still in flight for the old one passed the check
+  // and painted "saved ✓" over a freshly generated set that had never been saved.
+  // (The write itself was always correct — it captures the old id and the old array —
+  // so this was only ever the badge.)
+  const scope = `${week}:${draftId}`;
   const saves = useRef<SaveLifecycle<string> | null>(null);
-  if (!saves.current) saves.current = createSaveLifecycle<string>(SAVE_DEBOUNCE_MS, week);
+  if (!saves.current) saves.current = createSaveLifecycle<string>(SAVE_DEBOUNCE_MS, scope);
   const lifecycle = saves.current;
   useEffect(() => {
-    lifecycle.setScope(week);
-  }, [week, lifecycle]);
+    lifecycle.setScope(scope);
+  }, [scope, lifecycle]);
   useEffect(() => {
     // mount() in the BODY, not an initializer: StrictMode runs mount, cleanup and
     // mount again in development, so a flag only ever set to false on the way out
