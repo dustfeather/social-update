@@ -5,7 +5,7 @@ import { defaultKeymap, history, historyKeymap } from "@codemirror/commands";
 import { markdown } from "@codemirror/lang-markdown";
 import { syntaxHighlighting } from "@codemirror/language";
 import { isoWeekRange } from "./iso-week";
-import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX, isHostname } from "./draft-text";
+import { flattenMd, firstUrl, draftMd, safeHref, countGraphemes, countForX, isHostname, residualMarkers } from "./draft-text";
 import { HighlightStyle } from "@codemirror/language";
 import { tags as t } from "@lezer/highlight";
 import {
@@ -92,6 +92,7 @@ export default function App() {
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [draftId, setDraftId] = useState<number | null>(null); // row the edits save back onto
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -201,8 +202,17 @@ export default function App() {
       // latest.current, not a copy captured here: the timer fires once for a
       // burst of keystrokes and must save the last of them, not the first.
       saveDrafts(draftId, latest.current)
-        .then(() => setSaveState("saved"))
-        .catch(() => setSaveState("error"));
+        .then(() => {
+          setSaveState("saved");
+          setSaveError(null);
+        })
+        // The message was being discarded, so a 400 from the stricter PUT
+        // validation looked exactly like the wifi dropping. They need opposite
+        // responses from the author, and only one of them is worth retrying.
+        .catch((e) => {
+          setSaveState("error");
+          setSaveError(e instanceof Error ? e.message : "save failed");
+        });
     }, 800);
   }
 
@@ -299,7 +309,7 @@ export default function App() {
             Drafts
             {saveState !== "idle" && (
               <span className={`save-state save-${saveState}`}>
-                {saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : "save failed"}
+                {saveState === "saving" ? "saving…" : saveState === "saved" ? "saved ✓" : (saveError ?? "save failed")}
               </span>
             )}
           </h2>
@@ -476,7 +486,15 @@ const SHARES: Array<{
 const MASTODON_KEY = "social-update.mastodon-instance";
 const readInstance = () => {
   try {
-    return localStorage.getItem(MASTODON_KEY) ?? "";
+    // Validated on the way OUT as well as in. The version of this that shipped
+    // before the draft/Save split wrote on every keystroke, so half-typed values
+    // are already persisted in real browsers — and this value is interpolated
+    // into a share URL, where a stored `good.social/x?q=` would build
+    // `https://good.social/x?q=/share?text=<draft>` and send the post somewhere
+    // the author never chose. An unusable value reads as absent, which reopens
+    // the prompt.
+    const v = localStorage.getItem(MASTODON_KEY) ?? "";
+    return isHostname(v) ? v : "";
   } catch {
     return ""; // storage can be denied outright; a share still works, it just asks again
   }
@@ -615,6 +633,9 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // The generic count, shown in the header. Per-network counts are computed below,
   // because the networks disagree about what a character is.
   const chars = useMemo(() => countGraphemes(text), [text]);
+  // Markers that outlived flattening — an unclosed bold run reaches the composer
+  // as literal asterisks. Shown, never repaired: see residualMarkers.
+  const strays = useMemo(() => residualMarkers(text), [text]);
   const postUrl = useMemo(() => firstUrl(text), [text]);
 
   function flash(set: (v: any) => void, value: any) {
@@ -722,6 +743,14 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       <div className="card-head">
         <span className="angle">{draft.angle}</span>
         <span className="count">{chars} chars</span>
+        {strays.length > 0 && (
+          <span
+            className="stray-markers"
+            title={`Unclosed ${strays.join(" and ")} — this reaches the post as literal characters. Close it, or delete it if you meant it literally.`}
+          >
+            {strays.join(" ")} unclosed
+          </span>
+        )}
         <button onClick={() => copy("post")} title="Copy the post as plain text, ready to paste">
           {copied?.what === "post" ? (copied.failed ? "Copy failed" : "Copied ✓") : "Copy post"}
         </button>

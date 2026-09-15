@@ -488,3 +488,15 @@ textarea {
 }
 .instance-edit:hover { color: var(--text, #e6e8ec); }
 .instance-error { color: #e06c75; font-size: 12px; align-self: center; }
+
+/* A marker that outlived flattening. Amber rather than red: the draft still
+   saves and still posts — it just carries characters the author probably did
+   not mean to publish. */
+.stray-markers {
+  font-size: 0.8rem;
+  color: #e0af68;
+  border: 1px solid #e0af68;
+  border-radius: 3px;
+  padding: 0 0.35em;
+  cursor: help;
+}

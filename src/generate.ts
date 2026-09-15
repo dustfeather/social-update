@@ -48,16 +48,22 @@ function parseDrafts(result: string): Draft[] {
   if (fence) s = fence[1].trim();
   const arr = JSON.parse(s);
   if (!Array.isArray(arr)) throw new Error("model output was not a JSON array");
-  const kept = arr.filter((d) => d && typeof d.md === "string");
-  // An array that had elements and kept none is a CONTRACT break, not a quiet
-  // week: prompt.txt asks for `md` and every element arrived in some other shape.
-  // Returning [] here reaches the UI as "not enough material this week", which
-  // sends the next reader to the collector instead of to the prompt.
-  if (arr.length && !kept.length) {
-    const keys = [...new Set(arr.flatMap((d) => (d && typeof d === "object" ? Object.keys(d) : [typeof d])))];
-    throw new Error(`model returned ${arr.length} draft(s), none with an \`md\` field — got keys: ${keys.join(", ")}`);
+  // ANY element without `md` is a contract break — prompt.txt asks for it, so an
+  // element that arrived in some other shape means the reply and the prompt have
+  // drifted. Filtering instead would silently drop that draft: the author sees
+  // three posts, never learns a fourth was generated, and if every element is
+  // wrong the empty result reaches the UI as "not enough material this week",
+  // which sends the next reader to the collector rather than to the prompt.
+  // `src/vault-weekly.ts` — the other consumer of prompt.txt — validates with
+  // `.every()` for the same reason; the two agree on purpose.
+  const bad = arr.filter((d) => !d || typeof d.md !== "string");
+  if (bad.length) {
+    const keys = [...new Set(bad.flatMap((d) => (d && typeof d === "object" ? Object.keys(d) : [typeof d])))];
+    throw new Error(
+      `model returned ${arr.length} draft(s), ${bad.length} without an \`md\` field — got keys: ${keys.join(", ")}`,
+    );
   }
-  return kept.map((d) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
+  return arr.map((d) => ({ angle: String(d.angle ?? ""), md: String(d.md) }));
 }
 
 // tags is a JSON array written by the tagging pass; NULL until a run tags it.
