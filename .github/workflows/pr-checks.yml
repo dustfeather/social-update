@@ -42,6 +42,31 @@ jobs:
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
+  # Build the image without publishing it. Until this job existed, nothing
+  # exercised the Dockerfile on a PR: the only build was in deploy.yml, which runs
+  # after the merge, so a broken base image or a bad Dockerfile line reached `main`
+  # and was discovered by the job that deploys it.
+  #
+  # `packages: write` is granted even though nothing is pushed, and that is
+  # required rather than sloppy: build-push-image.yml's build job requests it
+  # unconditionally (`permissions:` accepts no expressions, so it cannot ask only
+  # when it is publishing), and a called workflow may not request more than the
+  # calling job grants -- granting less fails at validation with
+  # `startup_failure` and zero jobs, which reports nothing useful.
+  #
+  # `push: false` also turns the registry build cache read-only for this job, so a
+  # PR cannot write the `:buildcache` tag that deploy.yml's build pulls from.
+  # cache-from still applies, which is what keeps this fast enough to gate on.
+  image:
+    if: github.event.action != 'closed'
+    permissions:
+      contents: read
+      packages: write
+    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v6
+    with:
+      push: false
+      runner: arc-df-social-update
+
   review:
     if: github.event.action != 'closed'
     needs: [tests, web]
