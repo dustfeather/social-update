@@ -98,6 +98,20 @@ export default function App() {
   // Which item's full summary is expanded. The list already carries every field
   // /api/items returns, so opening one costs no extra request.
   const [openId, setOpenId] = useState<number | null>(null);
+  // One instance for the week, not one per card. This was DraftCard state seeded
+  // from localStorage at mount, so saving it on card 1 left cards 2 and 3 holding
+  // the empty string they mounted with: the prompt reopened on the next card and
+  // the `{instance} ✎` chip appeared on one card only, which is not "asks once and
+  // remembers it". It describes the USER, not the draft, so it lives with the user.
+  const [instance, setInstance] = useState(readInstance);
+  const rememberInstance = (h: string) => {
+    setInstance(h);
+    try {
+      localStorage.setItem(MASTODON_KEY, h);
+    } catch {
+      /* not remembering it costs one retype, not the share */
+    }
+  };
   const [manualText, setManualText] = useState("");
   const [drafts, setDrafts] = useState<Draft[]>([]);
   const [draftId, setDraftId] = useState<number | null>(null); // row the edits save back onto
@@ -331,7 +345,13 @@ export default function App() {
               previous week — or of the generation before a regenerate — and the
               editor keeps showing the draft it was first mounted with. */}
           {drafts.map((d, i) => (
-            <DraftCard key={`${draftId}-${i}`} draft={d} onChange={(next) => editDraft(i, next)} />
+            <DraftCard
+              key={`${draftId}-${i}`}
+              draft={d}
+              onChange={(next) => editDraft(i, next)}
+              instance={instance}
+              onInstance={rememberInstance}
+            />
           ))}
         </section>
       )}
@@ -435,7 +455,7 @@ const SHARES: Array<{
   count?: (text: string) => number;
   /** A limit we cannot actually know for this user's server: warn, never disable. */
   soft?: boolean;
-  href: (text: string, instance: string) => string;
+  href: (text: string, instance: string, url: string | null) => string;
 }> = [
   {
     key: "x",
@@ -479,14 +499,14 @@ const SHARES: Array<{
     label: "Facebook",
     limit: 63206,
     urlOnly: true,
-    href: (t) => {
+    href: (_t, _instance, url) => {
       // Never the bare `https://www.facebook.com/` this used to fall through to.
       // The button is disabled when there is no URL, so this branch is only
       // reachable if that check and this one ever disagree — and dropping the
       // user on a logged-in feed with their draft silently gone is worse than
-      // doing nothing at all.
-      const u = firstUrl(t);
-      return u ? `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(u)}` : "";
+      // doing nothing at all. They now cannot: this takes the same `postUrl` the
+      // disabled check reads, instead of scanning for a url of its own.
+      return url ? `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}` : "";
     },
   },
 ];
@@ -566,12 +586,21 @@ const mdHighlight = HighlightStyle.define([
   { tag: [t.processingInstruction, t.meta], color: "#6b7080" },
 ]);
 
-function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) => void }) {
+function DraftCard({
+  draft,
+  onChange,
+  instance,
+  onInstance,
+}: {
+  draft: Draft;
+  onChange: (next: Draft) => void;
+  instance: string;
+  onInstance: (host: string) => void;
+}) {
   const [copied, setCopied] = useState<{ what: "post" | "md"; failed: boolean } | null>(null);
   const [shared, setShared] = useState<{ key: string; copyFailed: boolean } | null>(null);
   const [instanceOpen, setInstanceOpen] = useState(false);
   const pendingShare = useRef<string | null>(null);
-  const [instance, setInstance] = useState(readInstance);
   // The input edits a DRAFT, never the committed value. Binding it straight to
   // `instance` meant every keystroke was live: typing "mastodon.soc" and pressing
   // Cancel left that as the instance, and because it is non-empty the prompt never
@@ -647,7 +676,9 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
   // as literal asterisks. Shown, never repaired, and computed from the SOURCE so
   // code spans are not mistaken for strays: see residualMarkers.
   const strays = useMemo(() => residualMarkers(md), [md]);
-  const postUrl = useMemo(() => firstUrl(text), [text]);
+  // From the SOURCE, like `strays` above: a url inside a fence is code being quoted,
+  // and flattening has already put it back verbatim by the time `text` exists.
+  const postUrl = useMemo(() => firstUrl(md), [md]);
 
   function flash<T>(set: (v: T | null) => void, value: T) {
     set(value);
@@ -679,7 +710,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       openInstancePrompt(s.key); // resume this one once the instance is known
       return;
     }
-    const href = s.href(text, useInstance);
+    const href = s.href(text, useInstance, postUrl);
     if (!href) return;
     // Open the composer INSIDE the click's user activation. Awaiting the
     // clipboard first spends the gesture — the tab is then popup-blocked — and an
@@ -720,12 +751,7 @@ function DraftCard({ draft, onChange }: { draft: Draft; onChange: (next: Draft) 
       setInstanceError(h ? `"${h}" is not a hostname — try mastodon.social` : "Enter your instance's hostname");
       return;
     }
-    setInstance(h);
-    try {
-      localStorage.setItem(MASTODON_KEY, h);
-    } catch {
-      /* not remembering it costs one retype, not the share */
-    }
+    onInstance(h);
     setInstanceOpen(false);
     setInstanceError(null);
     // Resume the share this prompt interrupted, rather than making the user click the

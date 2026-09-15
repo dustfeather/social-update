@@ -230,8 +230,26 @@ test("firstUrl finds a url and ignores a trailing paren", () => {
   assert.equal(firstUrl("no link here"), null);
 });
 
-test("firstUrl runs over flattened text, so a markdown link's url is found", () => {
-  assert.equal(firstUrl(flattenMd("see [the PR](https://x.dev/1)")), "https://x.dev/1");
+test("firstUrl takes the source and flattens it, so a markdown link's url is found", () => {
+  assert.equal(firstUrl("see [the PR](https://x.dev/1)"), "https://x.dev/1");
+});
+
+test("a url that only exists inside a fence is not a link to share", () => {
+  const md = "Ran the migration.\n\n```sh\ncurl https://api.internal/x\n```\n";
+  assert.equal(firstUrl(md), null);
+  // …and it is still in the post itself, verbatim — only the SHARE target is None.
+  assert.match(flattenMd(md), /curl https:\/\/api\.internal\/x/);
+});
+
+test("a url inside a code span is not a link to share either", () => {
+  assert.equal(firstUrl("hit `https://api.internal/x` to check"), null);
+});
+
+test("prose wins over a fence that came first", () => {
+  assert.equal(
+    firstUrl("```\nhttps://api.internal/x\n```\n\nWrote it up: https://blog.dev/p/1"),
+    "https://blog.dev/p/1"
+  );
 });
 
 // --- the pre-Markdown backfill ---------------------------------------------
