@@ -42,26 +42,75 @@ const LOOKBACK_DAYS = Number(process.env.CLAUDE_LOOKBACK_DAYS ?? 14);
 // one mediocre summary.
 const INCLUDE_SDK = process.env.CLAUDE_INCLUDE_SDK_SESSIONS === "1";
 
-export function isProgrammaticSession(file: string): boolean {
-  if (INCLUDE_SDK) return false;
+// Sessions a hook started in order to reason ABOUT another session.
+//
+// The claudeception Stop hook writes a slice of the running transcript to /tmp and
+// starts a fresh headless `claude -p` on it, so every fire leaves a full transcript
+// of its own beside the real one. Those are the tooling talking to itself: the work
+// they look at is already in the parent session and summarized there, and an entry
+// reading "opened a slice, judged nothing worth capturing" is noise in the journal.
+//
+// Today those runs record `entrypoint: "sdk-cli"`, so the denylist above already
+// drops them — but only incidentally. It holds until a release labels `claude -p`
+// something else, and CLAUDE_INCLUDE_SDK_SESSIONS=1 switches it off entirely, which
+// is meant to bring agent sessions BACK, never these. So match the child's own
+// opening line, which the hook on this box writes and controls.
+//
+// Matched against the FIRST user message only, never the whole head. A session that
+// merely DISCUSSES the hook — editing it, writing a test for this very filter — puts
+// that same sentence in its transcript as a tool argument or a file body, and that
+// session is real work that belongs in the journal. What a hook child alone has is
+// the sentence as the thing it was ASKED, in its opening prompt.
+const HOOK_CHILD_MARKERS: RegExp[] = [/Read the file \/tmp\/claude-claudeception-slice-/];
+
+// The opening prompt, i.e. the first user turn carrying plain text. Tool results
+// arrive as user records too, with an array content, and are skipped.
+function firstPrompt(text: string): string {
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    let o: any;
+    try {
+      o = JSON.parse(line);
+    } catch {
+      break; // a truncated line means the rest of this buffer is unusable too
+    }
+    if (o?.type === "user" && typeof o?.message?.content === "string") return o.message.content;
+  }
+  return "";
+}
+
+// The head of a transcript as text. 64 KB: everything classified on sits in the
+// first few records, and reading a whole multi-megabyte transcript to decide
+// whether to summarize it would cost more than summarizing it.
+function head(file: string): string {
   let fd: number;
   try {
     fd = fs.openSync(file, "r");
   } catch {
-    return false;
+    return "";
   }
   try {
-    // The field repeats on most records, so the head is enough; reading a whole
-    // multi-megabyte transcript to classify it would cost more than summarizing it.
     const buf = Buffer.alloc(64 * 1024);
     const read = fs.readSync(fd, buf, 0, buf.length, 0);
-    const m = buf.subarray(0, read).toString("utf8").match(/"entrypoint"\s*:\s*"([^"]+)"/);
-    return m ? m[1].startsWith("sdk") : false;
+    return buf.subarray(0, read).toString("utf8");
   } catch {
-    return false;
+    return "";
   } finally {
     fs.closeSync(fd);
   }
+}
+
+export function isProgrammaticSession(file: string): boolean {
+  const text = head(file);
+  if (!text) return false; // unreadable or empty — keep, per the fail-open rule above
+  // Deliberately NOT gated on INCLUDE_SDK: that flag asks for agent sessions back,
+  // and a hook summarizing the session already being summarized is never wanted.
+  const prompt = firstPrompt(text);
+  if (prompt && HOOK_CHILD_MARKERS.some((re) => re.test(prompt))) return true;
+  if (INCLUDE_SDK) return false;
+  // The field repeats on most records, so the first occurrence is representative.
+  const m = text.match(/"entrypoint"\s*:\s*"([^"]+)"/);
+  return m ? m[1].startsWith("sdk") : false;
 }
 
 export interface SessionRef {
