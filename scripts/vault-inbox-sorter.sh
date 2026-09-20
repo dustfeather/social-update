@@ -21,7 +21,11 @@ VAULT="$(realpath "$HOME/obsidian.md" 2>/dev/null)" || { echo "ERROR: vault syml
 INBOX="$VAULT/_Inbox"
 [[ -d "$INBOX" ]] || { echo "ERROR: $INBOX missing"; exit 1; }
 
-HEADROOM="$HOME/.local/bin/headroom"
+# Was headroom, an MCP proxy that fronted the CLI. It is no longer installed,
+# and this call site failed OPEN rather than loudly: the sorter exits early on
+# an empty _Inbox, so every run since finished green and the breakage would
+# only have surfaced the next time a note actually needed classifying.
+CLAUDE_BIN="${VAULT_CLAUDE_BIN:-$HOME/.local/bin/claude}"
 SETTINGS="$HOME/.local/bin/vault-keeper-sorter-settings.json"   # write-guard hook (defense in depth)
 MAX_NOTES=20          # drain at most N per run; the rest go next cycle
 MIN_AGE_S=15          # skip notes touched < this many seconds ago (mid-write / mid-Syncthing)
@@ -76,17 +80,23 @@ done
 # --- classify (read-only; no tools granted to the model) -----------------------
 GUARD=()
 [[ -f "$SETTINGS" ]] && GUARD=(--settings "$SETTINGS")
-# NB: `headroom wrap claude` parses -p as its own --port, so pass claude's args
-# after `--`. The headroom banner prints to stdout before the JSON, so pull out
-# the single {"type":"result",...} envelope line.
-raw="$(HOME="$HOME" "$HEADROOM" wrap claude -- -p "$PROMPT" \
+# The envelope pull below is kept: `--output-format json` still emits one
+# {"type":"result",...} line, and grepping for it is robust to anything else
+# the CLI decides to print first.
+raw="$(HOME="$HOME" "$CLAUDE_BIN" -p "$PROMPT" \
         --model haiku \
         --permission-mode bypassPermissions \
         --disallowed-tools Bash Edit Write MultiEdit NotebookEdit Read Glob Grep WebFetch WebSearch Task \
         --output-format json \
         "${GUARD[@]}" 2>/dev/null)" || { echo "ERROR: classifier invocation failed"; exit 1; }
 
-envelope="$(printf '%s' "$raw" | grep -E '\{"type":"result"' | tail -1)"
+# Select the result envelope by PARSING each line, not by grepping for
+# `{"type":"result"`. That pattern required "type" to be the object's FIRST
+# key; the CLI now opens the line `{"duration_api_ms":...}`, so the grep
+# matched nothing and the fallback below quietly handed the whole raw stream
+# to the classifier's JSON check — which then failed as "not an array",
+# blaming the model for an envelope that was never extracted.
+envelope="$(printf '%s\n' "$raw" | jq -c 'select(.type == "result")' 2>/dev/null | tail -1)"
 result="$(printf '%s' "$envelope" | jq -r '.result // empty' 2>/dev/null)"
 [[ -z "$result" ]] && result="$raw"
 # the model is told to emit ONLY the array; just strip any ``` fences (don't

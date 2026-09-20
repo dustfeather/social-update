@@ -33,7 +33,7 @@ Plus: the same job **sorts the `_Inbox`** into Projects / Notes / Resources.
 - **Git role going forward = backup only.** Syncthing is the sync layer. Bot writes **plain files**; git is a periodic backup snapshot, NOT the write path.
 - **Vault is a git repo** with `core.hooksPath = "99 System/Hooks"` (a pre-commit Mermaid note-graph generator — **to be dropped**, see §6). `.gitignore`: `.stfolder/ .trash/ .gh-sync/`.
 - **15 git repos** in `~/projects`. The canonical repo→GitHub→note map already exists as the **`Local Repos`** vault note (handles `flotila`→`fleet-manager`, nested `browser-extensions/*`, `TE/no7`=no-git/secrets, ITGuys-RO vs dustfeather owners).
-- **Claude invocation**: alias `claude='headroom wrap claude'` (`~/.local/bin/headroom`, a local Anthropic-API compression proxy). **Alias does NOT expand in systemd/cron** — call `~/.local/bin/headroom wrap claude` explicitly.
+- **Claude invocation**: `~/.local/bin/claude`, by absolute path. A bare `claude` **does NOT resolve in systemd/cron** — it is a shell alias interactively, and systemd starts with a minimal PATH. Override with `VAULT_CLAUDE_BIN`. This used to route through `headroom wrap claude`, a local Anthropic-API compression proxy; headroom was uninstalled and every call site broke with `ENOENT` until 2026-09-20.
 - **Permissions**: `~/.claude/settings.json` has `permissions.defaultMode="bypassPermissions"` + `skipDangerousModePermissionPrompt=true`. So headless runs auto-approve all tools — **no `--allowedTools` needed**. Unit must set `HOME=/home/dustfeather` or settings won't load (would fall back to `default` mode and hang); also pass `--permission-mode bypassPermissions` explicitly as belt-and-suspenders.
 - **Windows watcher handle**: scheduled task `\Obsidian Watcher` on host `DUSTYPC` (logon-triggered). `Watch-Inbox.vbs` launches hidden `powershell.exe -File Watch-Inbox.ps1`. No registry Run-key.
 
@@ -125,7 +125,7 @@ Scripts: `scripts/install-vault-graphify.sh` (setup) + `scripts/vault-graphify.s
 
 ### Invocation
 ```
-~/.local/bin/headroom wrap claude -p "<prompt>" --permission-mode bypassPermissions --model <opus|haiku>
+~/.local/bin/claude -p "<prompt>" --permission-mode bypassPermissions --model <opus|haiku>
 ```
 - Unit env: `HOME=/home/dustfeather`. No `--allowedTools`. Skills + MCP plugins (Graphify, context-mode) load under bypass mode.
 
@@ -170,7 +170,7 @@ Scripts: `scripts/install-vault-graphify.sh` (setup) + `scripts/vault-graphify.s
 
 - Exclude `.git/` from the Syncthing folder (don't replicate git internals mid-op).
 - Confirm Graphify **workspace mode** maturity; keep logical-join fallback ready.
-- Confirm `headroom wrap claude -p` runs clean under `systemd --user` with `HOME` set.
+- Confirm `~/.local/bin/claude -p` runs clean under `systemd --user` with `HOME` set.
 - Inbox sorter must not race Syncthing (`.sync-conflict-*` files) — managed by move-then-delete + the bot owning daily/project notes.
 
 ---

@@ -29,7 +29,12 @@ import { execSync, execFileSync } from "node:child_process";
 
 const HOME = os.homedir();
 const PROJECTS_ROOT = path.join(HOME, "projects");
-const HEADROOM = path.join(HOME, ".local", "bin", "headroom");
+// Was `headroom wrap claude`. headroom — an MCP proxy that fronted the CLI and
+// printed a banner ahead of its JSON — is no longer installed on this box, so
+// every run died `spawnSync .../bin/headroom ENOENT` before reaching the model.
+// The CLI is called directly now; the envelope parse below already picks the
+// `{"type":"result"}` line out of the tail, so losing the banner changes nothing.
+const CLAUDE_BIN = process.env.VAULT_CLAUDE_BIN ?? path.join(HOME, ".local", "bin", "claude");
 const REPO_DIR = path.join(HOME, "projects", "social-update");
 const SHADOW_DIR = path.join(REPO_DIR, ".vault-keeper", "repo-shadow");
 
@@ -142,14 +147,24 @@ function todayISO() {
 
 function askOpus(prompt) {
   const raw = execFileSync(
-    HEADROOM,
-    ["wrap", "claude", "--", "-p", prompt, "--model", "opus", "--permission-mode", "bypassPermissions",
+    CLAUDE_BIN,
+    ["-p", prompt, "--model", "opus", "--permission-mode", "bypassPermissions",
       "--disallowed-tools", "Bash", "Edit", "Write", "NotebookEdit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task",
       "--output-format", "json"],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, HOME } }
   );
-  const envLine = raw.split("\n").reverse().find((l) => l.trim().startsWith('{"type":"result"')) ?? "";
-  const result = (() => { try { return JSON.parse(envLine).result ?? ""; } catch { return ""; } })() || raw;
+  // Pick the result envelope by PARSING each line, not by matching a prefix.
+  // This used to be `.startsWith('{"type":"result"')`, which silently depended
+  // on the CLI emitting "type" as the object's FIRST key. It no longer does —
+  // the line now opens `{"duration_api_ms":...}` — so the find returned
+  // undefined, JSON.parse("") threw `Unexpected end of JSON input`, and the
+  // error named the parse rather than the envelope that was never found.
+  const envelope = raw.split("\n").reverse().map((l) => {
+    const t = l.trim();
+    if (!t.startsWith("{")) return null;
+    try { return JSON.parse(t); } catch { return null; }
+  }).find((o) => o && o.type === "result");
+  const result = (envelope && typeof envelope.result === "string" ? envelope.result : "") || raw;
   const jsonText = result.replace(/```json?/gi, "").replace(/```/g, "").replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/, "$1");
   return JSON.parse(jsonText);
 }

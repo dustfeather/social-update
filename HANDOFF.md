@@ -26,8 +26,11 @@ Do not re-derive — read it.
 
 ## Landmines (full detail in spec §2, §8)
 - `/mnt/c` is **9p → no inotify**. Anything "watch" must poll. Don't waste time on inotify.
-- `claude` is a shell **alias** (`headroom wrap claude`) — won't expand in systemd. Call
-  `~/.local/bin/headroom wrap claude` explicitly + set `HOME` in the unit.
+- Call `~/.local/bin/claude` by ABSOLUTE PATH + set `HOME` in the unit. A bare
+  `claude` is a shell alias in interactive use and does not expand in systemd;
+  systemd also starts with a minimal PATH. (Until 2026-09-20 these call sites
+  went through `headroom wrap claude`; headroom is gone and every one of them
+  died `spawnSync .../bin/headroom ENOENT`.)
 - bypassPermissions is on globally → **no `--allowedTools`** needed.
 - **Git = backup only**; Syncthing is the sync layer; OneDrive deprecating. Write plain
   files, never `git add -A`.

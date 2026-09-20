@@ -33,7 +33,12 @@ const CLAUDE_PROJECTS = expandHome(process.env.CLAUDE_PROJECTS ?? "~/.claude/pro
 const LEDGER_DIR = path.join(__dirname, "..", ".vault-keeper");
 const LEDGER_PATH = path.join(LEDGER_DIR, "ledger.sqlite");
 const LOCAL_REPOS_NOTE = "Resources/Engineering/Local Repos.md";
-const HEADROOM = path.join(os.homedir(), ".local", "bin", "headroom");
+// Was `headroom wrap claude`. headroom — an MCP proxy that fronted the CLI and
+// printed a banner ahead of its JSON — is no longer installed on this box, so
+// every run died `spawnSync .../bin/headroom ENOENT` before reaching the model.
+// The CLI is called directly now; the envelope parse below already picks the
+// `{"type":"result"}` line out of the tail, so losing the banner changes nothing.
+const CLAUDE_BIN = process.env.VAULT_CLAUDE_BIN ?? path.join(os.homedir(), ".local", "bin", "claude");
 const TZ = "Europe/Bucharest";
 
 const DIGEST_START = "<!-- vault-keeper:digest:start -->";
@@ -245,14 +250,24 @@ function distill(repos: RepoActivity[], mapHint: Record<string, string>): Plan {
   }
 
   const raw = execFileSync(
-    HEADROOM,
-    ["wrap", "claude", "--", "-p", prompt, "--model", "opus", "--permission-mode", "bypassPermissions",
+    CLAUDE_BIN,
+    ["-p", prompt, "--model", "opus", "--permission-mode", "bypassPermissions",
      "--disallowed-tools", "Bash", "Edit", "Write", "NotebookEdit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task",
      "--output-format", "json"],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, env: { ...process.env, HOME: os.homedir() } }
   );
-  const envLine = raw.split("\n").reverse().find((l) => l.trim().startsWith('{"type":"result"')) ?? "";
-  const result = (() => { try { return JSON.parse(envLine).result ?? ""; } catch { return ""; } })();
+  // Pick the result envelope by PARSING each line, not by matching a prefix.
+  // This used to be `.startsWith('{"type":"result"')`, which silently depended
+  // on the CLI emitting "type" as the object's FIRST key. It no longer does —
+  // the line now opens `{"duration_api_ms":...}` — so the find returned
+  // undefined, JSON.parse("") threw `Unexpected end of JSON input`, and the
+  // error named the parse rather than the envelope that was never found.
+  const envelope = raw.split("\n").reverse().map((l) => {
+    const t = l.trim();
+    if (!t.startsWith("{")) return null;
+    try { return JSON.parse(t); } catch { return null; }
+  }).find((o) => o && o.type === "result");
+  const result = (envelope && typeof envelope.result === "string" ? envelope.result : "");
   const jsonText = result.replace(/^[\s\S]*?(\{[\s\S]*\})[\s\S]*$/, "$1");
   const plan = JSON.parse(jsonText) as Plan;
   if (!plan || typeof plan.digest !== "string" || !Array.isArray(plan.projects))
