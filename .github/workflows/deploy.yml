@@ -29,9 +29,7 @@ concurrency:
 
 jobs:
   tests:
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v7
-    with:
-      runner: arc-df-social-update
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v8
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -48,15 +46,13 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v7
-    with:
-      runner: arc-df-social-update
+    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v8
 
   deploy:
     needs: build
     permissions:
       contents: read
-    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/deploy-k8s.yml@v8
     with:
       runner: arc-df-social-update
       namespace: social-update

@@ -4,7 +4,7 @@ on:
     # `closed` is in this list to cancel this workflow's own in-flight run when
     # the PR merges. A merge fires no `synchronize`, so without it nothing ever
     # re-enters the concurrency group below, and the review job keeps a
-    # self-hosted runner busy on a commit that is already history. Every job is
+    # runner busy on a commit that is already history. Every job is
     # gated off `closed`, so the run this creates does no work: it exists only
     # to claim the group and cancel its predecessor.
     types: [opened, synchronize, reopened, closed]
@@ -13,7 +13,7 @@ on:
 # Supersede an in-flight run when the PR is pushed to again, and — through
 # the `closed` trigger above — when it merges. This repo had no concurrency
 # group at all, so a merged PR's review job went on holding the single
-# `arc-df-social-update` runner while the next job queued behind it.
+# runner this repo's pool had, while the next job queued behind it.
 concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
@@ -22,23 +22,21 @@ jobs:
   tests:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v8
     with:
       node-version: "26"
       run-build: true          # `npm run build` (tsc); lint/test/typecheck auto-skip (no such scripts)
-      runner: arc-df-social-update
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   web:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v8
     with:
       node-version: "26"
       working-dir: web
       run-build: true          # `tsc --noEmit && vite build`
-      runner: arc-df-social-update
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -62,10 +60,9 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v8
     with:
       push: false
-      runner: arc-df-social-update
 
   review:
     if: github.event.action != 'closed'
@@ -75,7 +72,5 @@ jobs:
       pull-requests: write
       issues: read
       id-token: write
-    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v7
-    with:
-      runner: arc-df-social-update
+    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v8
     secrets: inherit
