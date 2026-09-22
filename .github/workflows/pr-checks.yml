@@ -73,5 +73,4 @@ jobs:
       issues: read
       id-token: write
     uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v7
-    with:
     secrets: inherit
