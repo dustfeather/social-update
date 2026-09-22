@@ -22,23 +22,21 @@ jobs:
   tests:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@hosted-runners
     with:
       node-version: "26"
       run-build: true          # `npm run build` (tsc); lint/test/typecheck auto-skip (no such scripts)
-      runner: arc-df-social-update
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
   web:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v7
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@hosted-runners
     with:
       node-version: "26"
       working-dir: web
       run-build: true          # `tsc --noEmit && vite build`
-      runner: arc-df-social-update
     secrets:
       NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -65,7 +63,6 @@ jobs:
     uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v7
     with:
       push: false
-      runner: arc-df-social-update
 
   review:
     if: github.event.action != 'closed'
@@ -77,5 +74,4 @@ jobs:
       id-token: write
     uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v7
     with:
-      runner: arc-df-social-update
     secrets: inherit
