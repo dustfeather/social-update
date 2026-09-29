@@ -75,6 +75,26 @@ db.exec(`
   }
 }
 
+// Migrations on `collect_runs`, guarded the same way.
+//   progress_done / progress_total — sessions summarized so far, out of how many.
+//                    NULL until the collector has counted its work.
+//   progress_eta_ms — the collector's own projection from its recent pace.
+//   heartbeat_at   — last time the collector said anything. What the stale reclaim
+//                    reads, so a run that is alive but long is not declared dead.
+{
+  const cols = new Set(
+    (db.prepare("PRAGMA table_info(collect_runs)").all() as Array<{ name: string }>).map((c) => c.name)
+  );
+  for (const [name, type] of [
+    ["progress_done", "INTEGER"],
+    ["progress_total", "INTEGER"],
+    ["progress_eta_ms", "INTEGER"],
+    ["heartbeat_at", "TEXT"],
+  ]) {
+    if (!cols.has(name)) db.exec(`ALTER TABLE collect_runs ADD COLUMN ${name} ${type}`);
+  }
+}
+
 // Shared insert path for every collector. Dedup via UNIQUE(source, external_id) + INSERT OR IGNORE.
 // iso_week is derived from occurred_at so late collection files items into the week they happened.
 export interface ItemInput {
@@ -242,10 +262,19 @@ export interface CollectRun {
   finished_at: string | null;
   inserted: number | null;
   error: string | null;
+  progress_done: number | null;
+  progress_total: number | null;
+  progress_eta_ms: number | null;
+  heartbeat_at: string | null;
 }
 
 // A claimed run that never reports is a dead poller; an unclaimed run means no
 // poller is running at all. Reclaim both to 'error' so single-flight can't wedge.
+//
+// "Never reports" is measured from the collector's last heartbeat, falling back to
+// the claim. It was the claim alone, which gave every run fifteen minutes — and a
+// run summarizing a backlog takes hours, so the row went to 'error' mid-run, the
+// button re-armed, and the next click queued a second pass behind a live one.
 const RUNNING_STALE_MS = 15 * 60_000;
 const PENDING_STALE_MS = 30 * 60_000;
 
@@ -269,7 +298,7 @@ const finishRunStmt = db.prepare(
 const reclaimRunningStmt = db.prepare(
   `UPDATE collect_runs SET status='error', finished_at=@now,
        error='timed out — poller did not report (presumed dead)'
-     WHERE status='running' AND started_at < @cut`
+     WHERE status='running' AND COALESCE(heartbeat_at, started_at) < @cut`
 );
 const reclaimPendingStmt = db.prepare(
   `UPDATE collect_runs SET status='error', finished_at=@now,
@@ -312,6 +341,22 @@ export function finishRun(id: number, result: { inserted?: number; error?: strin
     inserted: result.inserted ?? null,
     error: result.error ?? null,
   });
+}
+
+// Collector reports how far a run has got. Only a running row takes it: a report
+// that arrives after the poller has finished the run (or after a reclaim) must not
+// reopen it. Returns whether the row accepted it.
+const runProgressStmt = db.prepare(
+  `UPDATE collect_runs SET progress_done = @done, progress_total = @total,
+       progress_eta_ms = @eta_ms, heartbeat_at = @now
+     WHERE id = @id AND status = 'running'`
+);
+export function setRunProgress(
+  id: number,
+  p: { done: number | null; total: number | null; eta_ms: number | null }
+): boolean {
+  const res = runProgressStmt.run({ id, ...p, now: new Date().toISOString() });
+  return Number(res.changes) > 0;
 }
 
 // Latest run (any status) — drives the UI button state + completion notification.

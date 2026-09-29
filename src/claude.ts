@@ -3,6 +3,7 @@ import path from "path";
 import { config } from "dotenv";
 import { buildManifest, WORK_DIR } from "./claude-sessions";
 import { createProgress } from "./progress-bar";
+import { nullReporter, type RunReporter } from "./run-progress";
 import { writeFileDurable, replaceFileDurable } from "./durable";
 import { importSummaries } from "./claude-import";
 import { readProgress, recordProgress, forgetProgress, compactProgress } from "./claude-progress";
@@ -102,10 +103,10 @@ export function releaseLock(): void {
   fs.rmSync(LOCK_PATH, { force: true });
 }
 
-export async function collectClaude(): Promise<number> {
+export async function collectClaude(runReport: RunReporter = nullReporter): Promise<number> {
   if (!acquireLock()) return 0;
   try {
-    return await collectClaudeLocked();
+    return await collectClaudeLocked(runReport);
   } finally {
     releaseLock();
   }
@@ -138,7 +139,7 @@ const MAX_CONSECUTIVE_TRANSPORT_FAILURES = Number(process.env.CLAUDE_MAX_TRANSPO
 // tag later with `npm run collect:tag`, which is unchanged.
 const TAG_IN_RUN = process.env.CLAUDE_TAG !== "0";
 
-async function collectClaudeLocked(): Promise<number> {
+async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
   const manifest = buildManifest();
   const count = manifest.sessions.length;
   if (count === 0) {
@@ -205,6 +206,8 @@ async function collectClaudeLocked(): Promise<number> {
   // On a terminal this repaints one line; under systemd it is inert and the plain
   // per-session lines below are all that is written. See progress-bar.ts.
   const bar = createProgress(todo.length);
+  // The same count, for the UI's "Collect now" bar. See run-progress.ts.
+  runReport.start(todo.length);
 
   // Everything summarized but not yet committed. Seeded with the resumed files so a
   // restart imports them even if the model is never needed again.
@@ -309,6 +312,7 @@ async function collectClaudeLocked(): Promise<number> {
       if (!result.ok) {
         failed++;
         bar.advance(Date.now() - startedAt, true);
+        runReport.advance(Date.now() - startedAt, true);
         bar.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
         if (result.transport) {
           if (++consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
@@ -345,6 +349,7 @@ async function collectClaudeLocked(): Promise<number> {
       ok++;
       batch.push(session.session_id);
       bar.advance(Date.now() - startedAt);
+      runReport.advance(Date.now() - startedAt);
       bar.line(
         `[collect] claude: ${label} ok in ${(result.ms / 1000).toFixed(1)}s ` +
         `(${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`
@@ -352,6 +357,9 @@ async function collectClaudeLocked(): Promise<number> {
 
       if (batch.length >= IMPORT_BATCH) await flush("batch");
     }
+    // The loop can stop short — time budget spent, model server unwell — and the UI
+    // would otherwise sit on "N/M · ~Xh left" through tagging and the final import.
+    runReport.finish();
 
     // Tag while the model is still resident. The pass is the last thing in the run
     // that needs it, and releasing first would mean paying a cold load again for a

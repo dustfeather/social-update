@@ -500,3 +500,91 @@ textarea {
   padding: 0 0.35em;
   cursor: help;
 }
+
+/* Progress bars beside "Collect now" and "Generate drafts". The fill animates its
+   width so a jump between reports reads as progress rather than a flicker. The
+   indeterminate stripe is for stretches with nothing to count — see progress.ts. */
+.generate-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 10px;
+}
+
+.generate-row .generate {
+  margin-top: 0;
+}
+
+.progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.progress-track {
+  position: relative;
+  display: block;
+  width: 160px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  flex: none;
+}
+
+.progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.6s ease;
+}
+
+.progress-indeterminate .progress-fill {
+  position: absolute;
+  width: 35%;
+  animation: progress-slide 1.4s ease-in-out infinite;
+}
+
+/* The step in hand, when it cannot report finer than "started": a stripe sweeping
+   the part of the bar it will fill. */
+.progress-active {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat;
+  background-size: 40% 100%;
+  opacity: 0.55;
+  animation: progress-sweep 1.6s ease-in-out infinite;
+}
+
+@keyframes progress-sweep {
+  from { background-position: -70% 0; }
+  to { background-position: 170% 0; }
+}
+
+@keyframes progress-slide {
+  from { left: -35%; }
+  to { left: 100%; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-fill { transition: none; }
+  .progress-active { animation: none; background: var(--accent); opacity: 0.3; }
+  .progress-indeterminate .progress-fill {
+    animation: none;
+    left: 0;
+    width: 100%;
+    opacity: 0.4;
+  }
+}
+
+.progress-label {
+  font-size: 13px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}

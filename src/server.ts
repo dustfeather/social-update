@@ -11,6 +11,7 @@ import db, {
   claimNextRun,
   finishRun,
   latestRun,
+  setRunProgress,
   setItemIgnored,
   type ItemInput,
 } from "./db";
@@ -115,19 +116,36 @@ app.put("/api/drafts/:id", (req, res) => {
 });
 
 // Generate drafts for a week from its items + optional manual text via the claude CLI.
+//
+// Streamed as NDJSON, one event per line, so the button can show which of the two
+// model passes it is waiting on rather than a single opaque minute-long request:
+//   {"type":"stage","stage":"drafting"|"humanizing"}  as each pass starts
+//   {"type":"result","draftId":…,"drafts":[…]}         once, on success
+//   {"type":"error","error":"…"}                       once, on failure
+// The status is already 200 by the time a pass can fail, so failure travels in the
+// stream. Bad input is refused before streaming starts, as a plain 400.
 app.post("/api/generate", async (req, res) => {
   const week = String(req.body?.week ?? "");
   const manualText = String(req.body?.manualText ?? "");
   if (!WEEK_RE.test(week)) {
     return res.status(400).json({ error: "week must be in YYYY-Www format" });
   }
+  res.status(200);
+  res.setHeader("content-type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("cache-control", "no-cache, no-transform");
+  // An nginx in front buffers a proxied body by default, which would hold every
+  // stage back until the result — this turns that off for this response only.
+  res.setHeader("x-accel-buffering", "no");
+  res.flushHeaders();
+  const send = (event: object) => res.write(JSON.stringify(event) + "\n");
   try {
-    const result = await generateDrafts(week, manualText);
-    res.json(result);
+    const result = await generateDrafts(week, manualText, (stage) => send({ type: "stage", stage }));
+    send({ type: "result", ...result });
   } catch (err) {
     console.error("[generate]", err);
-    res.status(500).json({ error: err instanceof Error ? err.message : "generation failed" });
+    send({ type: "error", error: err instanceof Error ? err.message : "generation failed" });
   }
+  res.end();
 });
 
 function safeParse(s: string): unknown {
@@ -215,6 +233,28 @@ app.post("/api/collect/:id/done", (req, res) => {
     inserted: typeof inserted === "number" ? inserted : undefined,
     error: typeof error === "string" && error ? error : undefined,
   });
+  res.json({ ok: true });
+});
+
+// Collector reports how far a claimed run has got — drives the button's bar, and
+// doubles as the heartbeat the stale reclaim reads. 409 when the row is no longer
+// running; the collector drops it either way.
+app.post("/api/collect/:id/progress", (req, res) => {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) return res.status(400).json({ error: "id must be an integer" });
+  const { done, total, eta_ms } = req.body ?? {};
+  const count = (v: unknown) => Number.isInteger(v) && (v as number) >= 0;
+  // Both null is a heartbeat from before the collector has counted its work.
+  const uncounted = done === null && total === null;
+  if (!uncounted && (!count(done) || !count(total) || done > total)) {
+    return res.status(400).json({ error: "done and total must be integers with 0 <= done <= total, or both null" });
+  }
+  if (eta_ms != null && !count(eta_ms)) {
+    return res.status(400).json({ error: "eta_ms must be a non-negative integer or null" });
+  }
+  if (!setRunProgress(id, { done, total, eta_ms: eta_ms ?? null })) {
+    return res.status(409).json({ error: `run ${id} is not running` });
+  }
   res.json({ ok: true });
 });
 

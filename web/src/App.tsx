@@ -22,6 +22,7 @@ import {
 } from "./draft-text";
 import { createSaveLifecycle, type SaveLifecycle } from "./save-lifecycle";
 import { createFlasher, type Flasher } from "./flash";
+import { collectBar, generateBar, type BarView, type GenerateStage } from "./progress";
 import { tags } from "@lezer/highlight";
 import {
   fetchWeeks,
@@ -128,6 +129,17 @@ export default function App() {
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [generating, setGenerating] = useState(false);
+  // Which model pass the server says it is in, and a clock for the label. The clock
+  // ticks only while generating; it is what shows the page has not hung during a
+  // pass that can take a minute on its own.
+  const [genStage, setGenStage] = useState<GenerateStage | null>(null);
+  const [genStartedAt, setGenStartedAt] = useState(0);
+  const [genNow, setGenNow] = useState(0);
+  useEffect(() => {
+    if (!generating) return;
+    const id = setInterval(() => setGenNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [generating]);
   const [error, setError] = useState<string | null>(null);
 
   // Load week list once; default to the newest week.
@@ -190,10 +202,14 @@ export default function App() {
     // Like selectWeek: the row is about to be replaced, so write the pending edit to
     // the one it belongs to rather than leaving it to a timer that fires afterwards.
     lifecycle.flush();
+    const started = Date.now();
+    setGenStartedAt(started);
+    setGenNow(started);
+    setGenStage(null);
     setGenerating(true);
     setError(null);
     try {
-      const res = await generate(week, manualText);
+      const res = await generate(week, manualText, setGenStage);
       setDrafts(res.drafts);
       setDraftId(res.draftId);
       setSaveState("idle");
@@ -369,9 +385,12 @@ export default function App() {
           placeholder="- Shipped X for client&#10;- Fixed Y in the deploy pipeline"
           rows={5}
         />
-        <button className="generate" onClick={onGenerate} disabled={generating || !week}>
-          {generating ? "Generating…" : "Generate drafts"}
-        </button>
+        <div className="generate-row">
+          <button className="generate" onClick={onGenerate} disabled={generating || !week}>
+            {generating ? "Generating…" : "Generate drafts"}
+          </button>
+          {generating && <ProgressBar view={generateBar(genStage, genNow - genStartedAt)} name="Draft generation" />}
+        </div>
       </section>
 
       {drafts.length > 0 && (
@@ -466,16 +485,55 @@ function CollectButton() {
     }
   }
 
+  const bar = active ? collectBar(run) : null;
+
   return (
     <span className="collect">
       <button className="collect-btn" onClick={onClick} disabled={active}>
         {active ? "Collecting…" : "Collect now"}
       </button>
+      {bar && <ProgressBar view={bar} name="Collection" />}
       {notice && (
         <span className="collect-notice">
           {notice} <button className="collect-dismiss" onClick={() => setNotice(null)}>×</button>
         </span>
       )}
+    </span>
+  );
+}
+
+// A bar with its label beside it. `value` null is indeterminate: a stripe that
+// moves, for the stretches where there is honestly nothing to count. aria-valuenow
+// is left off then, which is how a progressbar says "indeterminate" to a reader.
+function ProgressBar({ view, name }: { view: BarView; name: string }) {
+  const pct = view.value == null ? null : Math.round(Math.min(1, Math.max(0, view.value)) * 100);
+  return (
+    <span className="progress">
+      <span
+        className={`progress-track${pct == null ? " progress-indeterminate" : ""}`}
+        role="progressbar"
+        aria-label={name}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={pct ?? undefined}
+        aria-valuetext={view.label}
+      >
+        {/* Keyed on the mode: a fresh element when the bar turns determinate, or the
+            width transition animates the sliding stripe's 35% down to the real value
+            and the first report reads as progress going backwards. */}
+        <span
+          key={pct == null ? "sliding" : "filled"}
+          className="progress-fill"
+          style={pct == null ? undefined : { width: `${pct}%` }}
+        />
+        {pct != null && view.active && (
+          <span
+            className="progress-active"
+            style={{ left: `${view.active[0] * 100}%`, width: `${(view.active[1] - view.active[0]) * 100}%` }}
+          />
+        )}
+      </span>
+      <span className="progress-label">{view.label}</span>
     </span>
   );
 }

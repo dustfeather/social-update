@@ -161,7 +161,9 @@ echo "claimed run $id — running collector"
 # how far it got, and that is exactly what you want after an unclean stop.)
 log="$HOME/.cache/social-update/claude/last-run.log"
 mkdir -p "$(dirname "$log")"
-"$HOME/.local/bin/social-collect-watchdog.sh" > "$log" 2>&1; rc=$?
+# COLLECT_RUN_ID tells the collector which queue row its progress reports belong to
+# (see src/run-progress.ts); it passes through the watchdog and npm untouched.
+COLLECT_RUN_ID="$id" "$HOME/.local/bin/social-collect-watchdog.sh" > "$log" 2>&1; rc=$?
 cat "$log"
 
 # How many items landed comes from the collector's own result file, not from its

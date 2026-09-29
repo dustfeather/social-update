@@ -122,7 +122,7 @@ export function mergeHumanized(drafts: Draft[], result: string): Draft[] {
   });
 }
 
-async function humanize(drafts: Draft[]): Promise<Draft[]> {
+async function humanize(drafts: Draft[], onStage: (stage: GenerateStage) => void): Promise<Draft[]> {
   if (process.env.HUMANIZE === "0" || !drafts.length) return drafts;
   let prompt: string;
   try {
@@ -130,6 +130,8 @@ async function humanize(drafts: Draft[]): Promise<Draft[]> {
   } catch {
     return drafts;
   }
+  // Only once the pass is certain to run, so a skipped pass never shows as a stage.
+  onStage("humanizing");
   try {
     const input = `${prompt.trim()}\n\n${JSON.stringify(drafts.map((d) => d.md), null, 2)}`;
     // The editing tools are taken away for this call. Left with them, the skill does
@@ -142,9 +144,14 @@ async function humanize(drafts: Draft[]): Promise<Draft[]> {
   }
 }
 
+// The model passes a generation waits on, in order. Reported as each one starts,
+// so the UI can say which of them the minute is being spent in.
+export type GenerateStage = "drafting" | "humanizing";
+
 export async function generateDrafts(
   week: string,
-  manualText: string
+  manualText: string,
+  onStage: (stage: GenerateStage) => void = () => {}
 ): Promise<{ draftId: number; drafts: Draft[] }> {
   const promptText = fs.readFileSync(PROMPT_PATH, "utf8");
   const items = getWeekItems(week);
@@ -152,8 +159,9 @@ export async function generateDrafts(
     throw new Error(`no items for ${week} and no manual text — nothing to generate from`);
   }
   const input = buildInput(promptText, items, manualText);
+  onStage("drafting");
   const result = await runClaude(input);
-  const drafts = await humanize(parseDrafts(result));
+  const drafts = await humanize(parseDrafts(result), onStage);
 
   const draftId = saveDraft({
     iso_week: week,

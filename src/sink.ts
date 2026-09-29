@@ -1,5 +1,6 @@
 import { config } from "dotenv";
 import type { ItemInput } from "./db";
+import type { RunProgress } from "./run-progress";
 
 config({ quiet: true });
 
@@ -64,4 +65,24 @@ export async function applyTags(
     if (setItemTags(source, external_id, list)) updated++;
   }
   return updated;
+}
+
+// A collection run's progress, for the UI's bar. Same two roads again. See
+// run-progress.ts for why a failure here is never allowed to stop the run.
+export async function reportRunProgress(runId: number, p: RunProgress): Promise<void> {
+  if (INGEST_URL) {
+    const res = await fetch(new URL(`/api/collect/${runId}/progress`, INGEST_URL), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(p),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) {
+      throw new Error(`progress POST ${res.status}: ${(await res.text()).slice(0, 300)}`);
+    }
+    return;
+  }
+
+  const { setRunProgress } = require("./db") as typeof import("./db");
+  setRunProgress(runId, p);
 }

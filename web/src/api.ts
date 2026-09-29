@@ -1,6 +1,7 @@
 // Thin typed wrapper over the backend API.
 
 import { normalizeDrafts } from "./draft-text";
+import { createLineSplitter, type GenerateStage } from "./progress";
 
 export interface WeekRow {
   week: string;
@@ -79,6 +80,12 @@ export interface CollectRun {
   finished_at: string | null;
   inserted: number | null;
   error: string | null;
+  /** Sessions summarized so far, out of progress_total. Null until the collector has counted. */
+  progress_done: number | null;
+  progress_total: number | null;
+  /** The collector's own projection from its recent pace. */
+  progress_eta_ms: number | null;
+  heartbeat_at: string | null;
 }
 
 // Enqueue a collection run. 409 (single-flight) is not an error here — it means a
@@ -106,14 +113,45 @@ export async function setItemIgnored(id: number, ignored: boolean): Promise<{ id
   return res.json();
 }
 
-export async function generate(week: string, manualText: string): Promise<{ draftId: number; drafts: Draft[] }> {
+// The server streams NDJSON: a `stage` event as each model pass starts, then one
+// `result` or `error`. See /api/generate in server.ts.
+export async function generate(
+  week: string,
+  manualText: string,
+  onStage: (stage: GenerateStage) => void = () => {}
+): Promise<{ draftId: number; drafts: Draft[] }> {
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ week, manualText }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `generate failed (${res.status})`);
-  return res.json();
+  if (!res.ok || !res.body) {
+    throw new Error((await res.json().catch(() => ({}))).error ?? `generate failed (${res.status})`);
+  }
+  const lines = createLineSplitter();
+  const reader = res.body.getReader();
+  let outcome: { draftId: number; drafts: Draft[] } | null = null;
+  const handle = (line: string) => {
+    const ev = JSON.parse(line);
+    if (ev.type === "stage") onStage(ev.stage);
+    else if (ev.type === "error") throw new Error(ev.error ?? "generation failed");
+    else if (ev.type === "result") outcome = { draftId: ev.draftId, drafts: ev.drafts };
+  };
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      lines.push(value).forEach(handle);
+    }
+    lines.end().forEach(handle);
+  } finally {
+    // An error event or a bad line throws out of the loop with the body unread.
+    reader.cancel().catch(() => {});
+  }
+  // A stream that ends with neither event is a connection dropped mid-generation —
+  // a proxy timeout, say — not an empty result.
+  if (!outcome) throw new Error("generation ended without a result — the connection was cut");
+  return outcome;
 }
 
 // Persist in-place edits to a generated draft row. Only `md` is sent: the plain

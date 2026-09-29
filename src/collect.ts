@@ -3,12 +3,14 @@ import path from "path";
 import { replaceFileDurable } from "./durable";
 import { collectClaude } from "./claude";
 import { WORK_DIR } from "./claude-sessions";
+import { createRunReporter, nullReporter, type RunReporter } from "./run-progress";
+import { reportRunProgress } from "./sink";
 
 // Single entry point for collection. Claude Code sessions are the only source:
 // GitHub events duplicated what the sessions already say (and said it in commit
 // subjects), Obsidian notes and claude.ai conversations were mostly not about the
 // work being journalled. Removed 2026-09-12 — see git history for the collectors.
-type Collector = { name: string; run: () => Promise<number> };
+type Collector = { name: string; run: (report: RunReporter) => Promise<number> };
 
 const collectors: Collector[] = [{ name: "claude", run: collectClaude }];
 
@@ -24,12 +26,26 @@ const collectors: Collector[] = [{ name: "claude", run: collectClaude }];
 //   2  a collector failed; the others still ran and their items are committed
 const EXIT_SOURCE_FAILED = 2;
 
+// The queue row this process is working for, handed down by the poller so progress
+// lands on the right one. Absent when collect is run by hand: nothing to report to.
+function runReporter(): RunReporter {
+  const raw = process.env.COLLECT_RUN_ID;
+  if (!raw) return nullReporter;
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) {
+    console.warn(`[collect] ignoring COLLECT_RUN_ID=${JSON.stringify(raw)} — not a run id`);
+    return nullReporter;
+  }
+  return createRunReporter({ send: (p) => reportRunProgress(id, p) });
+}
+
 async function main(): Promise<number> {
   let total = 0;
   let failedSources = 0;
+  const report = runReporter();
   for (const c of collectors) {
     try {
-      const n = await c.run();
+      const n = await c.run(report);
       total += n;
       console.log(`[collect] ${c.name}: ${n} item${n === 1 ? "" : "s"} written`);
     } catch (err) {
@@ -37,6 +53,7 @@ async function main(): Promise<number> {
       console.error(`[collect] ${c.name}: FAILED —`, err instanceof Error ? err.message : err);
     }
   }
+  report.stop();
   console.log(`[collect] done — ${total} item${total === 1 ? "" : "s"} written`);
 
   // A result FILE, because the caller needs the number and the log is not an API.
