@@ -43,4 +43,3 @@ Do not re-derive — read it.
 - `prefer-githook-checks` — if adding typecheck/lint to the TS writer stage.
 - `obsidian-markdown` — when writing vault notes (wikilinks, callouts, frontmatter).
 - `workflow-script-authoring` — only if slice 3 grows to per-repo parallel subagents (spec §4.2 scale path).
-- `infra-access` — creds for GitHub/Syncthing/Windows-task ops exist locally; check before claiming no access.
