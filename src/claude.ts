@@ -11,17 +11,17 @@ import { summarizeSession } from "./summarize";
 import type { SessionSummary } from "./summary";
 import { assignTags, type TagCandidate, type TagPassResult } from "./tag-pass";
 import { applyTags } from "./sink";
-import { loadModel, unloadModel, LLM_MODEL, LLM_BASE } from "./llm";
+import { LLM_MODEL, LLM_BASE } from "./llm";
 
 config({ quiet: true });
 
-// Collection is a loop over a local model, not an agent run.
+// Collection is a loop of plain completions on Haiku (see llm.ts), not an agent run.
 //
-// It used to be `claude -p` fanning out one sub-agent per session. That worked, but
-// it spent Claude on the most mechanical half of the pipeline: reading a transcript
-// and filling a six-field schema. A local model does that at 100% valid@1 over a
-// stratified sample, so Claude is now spent only where judgement is actually
-// required — drafting posts.
+// It was once `claude -p` fanning out one sub-agent per session, then a local
+// llama.cpp model. The agent spent a big model on the most mechanical half of the
+// pipeline — reading a transcript and filling a six-field schema; the local model
+// owned the GPU for an eight-hour night. Haiku with no tools does the fill in
+// seconds, several sessions at a time (CLAUDE_CONCURRENCY).
 //
 // Tagging is part of the run again (see tag-pass.ts). It is still one pass over the
 // whole batch rather than a per-session call — that was always the constraint, and
@@ -39,9 +39,7 @@ config({ quiet: true });
 const BUDGET_MS = Number(process.env.CLAUDE_COLLECT_BUDGET_MIN ?? 120) * 60_000;
 
 // Two collectors in the same WORK_DIR destroy each other: they write over one
-// manifest, one progress ledger and one state file, and — with LC_ROUTER_MAX=1 —
-// contend for the single model the router can hold, so the one that finishes first
-// unloads the model out from under the other. It happens on its own: the systemd
+// manifest, one progress ledger and one state file. It happens on its own: the systemd
 // timer fires on a schedule and a manual backfill is exactly the kind of long run
 // it lands in the middle of.
 // The DB's enqueueRun() single-flight does not help: that guards POST /api/collect,
@@ -125,13 +123,15 @@ const IMPORT_BATCH = Number(process.env.CLAUDE_IMPORT_BATCH ?? 10);
 // A model failure is per-session: a transcript the model cannot summarize says
 // nothing about the next one. A transport failure is usually about the server, and
 // an unwell server fails every remaining session in milliseconds — so without this,
-// one wedged llama-server converts a recoverable outage into a 300-session sweep of
-// failures, and the log looks like the model got catastrophically worse. Observed
-// after SIGKILLing a run mid-generation: the next request came back
-// `500 "Context size has been exceeded."` on a prompt that fits the context twice
-// over, because the child still held the KV slot. Stopping leaves every unreached
-// session pending, which is the outcome that costs nothing.
+// one outage (logged out, rate-limited, network down) converts into a 300-session
+// sweep of failures, and the log looks like the model got catastrophically worse.
+// Stopping leaves every unreached session pending, which is the outcome that costs
+// nothing.
 const MAX_CONSECUTIVE_TRANSPORT_FAILURES = Number(process.env.CLAUDE_MAX_TRANSPORT_FAILURES ?? 5);
+
+// Sessions summarized at once. Each is an independent `claude -p` call; the work on
+// this box is only spawning the CLI and reading the transcript.
+const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.CLAUDE_CONCURRENCY ?? 4)) || 4);
 
 // Tagging in-run, off with CLAUDE_TAG=0. The escape hatch exists because the pass
 // is the one part of a collection that spends the model on something other than
@@ -238,9 +238,16 @@ async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
     }
   }
 
-  const flush = async (why: string) => {
+  // Workers keep pushing into `batch` while an import is in flight, so each flush
+  // takes the batch it commits up front, and flushes run one at a time. A failed
+  // flush must not poison the chain: the next one (the final, the signal's) still runs.
+  let flushing: Promise<void> = Promise.resolve();
+  const flush = (why: string) => (flushing = flushing.catch(() => {}).then(() => flushNow(why)));
+  const flushNow = async (why: string) => {
     if (!batch.length) return;
-    const report = await importSummaries(batch);
+    const ids = batch;
+    batch = [];
+    const report = await importSummaries(ids);
     replaceFileDurable(path.join(WORK_DIR, "import-report.json"), JSON.stringify(report, null, 2));
     for (const bad of report.invalid) {
       // The validator ran at summarize time too, so a file invalid here was edited
@@ -249,7 +256,7 @@ async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
     }
     // State has advanced for these; the files are now redundant and the ledger
     // entries would only keep stale fingerprints alive.
-    for (const id of batch) {
+    for (const id of ids) {
       fs.rmSync(summaryFile(id), { force: true });
       delete progress[id];
       forgetProgress(id);
@@ -257,20 +264,16 @@ async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
     imported += report.written;
     landed.push(...report.imported_ids);
     console.log(`[collect] claude: committed ${report.written} item(s) (${why})`);
-    batch = [];
   };
 
   let ok = 0;
   let failed = 0;
   let tagged: TagPassResult | undefined;
   let consecutiveTransportFailures = 0;
-  let loadedByUs = false;
-  const release = async () => { await unloadModel(loadedByUs); loadedByUs = false; };
   const onSignal = (sig: string) => {
     void (async () => {
       bar.finish();
-      console.log(`\n[collect] claude: ${sig} — releasing the model and committing what is done`);
-      await release();
+      console.log(`\n[collect] claude: ${sig} — committing what is done`);
       try { await flush(sig); } catch (e) { console.error(`[collect] claude: final commit failed: ${e}`); }
       process.exit(130);
     })();
@@ -280,91 +283,88 @@ async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
 
   const deadline = Date.now() + BUDGET_MS;
   try {
-    // `batch` is the resumed summaries at this point: a run with nothing left to
-    // summarize still needs the model if it is going to tag them.
-    if (todo.length || (TAG_IN_RUN && batch.length)) {
-      // Load up front rather than letting the first session trigger it. A cold load
-      // is seconds to tens of seconds; charged to session one it looks like a
-      // pathologically slow session and sends you reading that transcript for a
-      // reason that is not there.
-      const t0 = Date.now();
-      loadedByUs = await loadModel();
-      console.log(
-        loadedByUs
-          ? `[collect] claude: loaded ${LLM_MODEL} in ${((Date.now() - t0) / 1000).toFixed(1)}s`
-          : `[collect] claude: ${LLM_MODEL} was already resident — leaving it as found on exit`
-      );
-    }
-
-    for (const [i, session] of todo.entries()) {
-      if (Date.now() > deadline) {
-        bar.error(
-          `[collect] claude: ${BUDGET_MS / 60_000} min budget spent after ${i} session(s) — ` +
-          `the remaining ${todo.length - i} stay pending for the next run`
-        );
-        break;
-      }
-
-      const label = `[${String(i + 1).padStart(3)}/${todo.length}] ${session.session_id.slice(0, 8)} ${session.project}`;
-      const startedAt = Date.now();
-      const result = await summarizeSession(session);
-
-      if (!result.ok) {
-        failed++;
-        bar.advance(Date.now() - startedAt, true);
-        runReport.advance(Date.now() - startedAt, true);
-        bar.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
-        if (result.transport) {
-          if (++consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES) {
-            bar.error(
-              `[collect] claude: ${consecutiveTransportFailures} consecutive transport failures — ` +
-              `the model server looks unwell, stopping. The remaining ` +
-              `${todo.length - i - 1} session(s) stay pending.`
-            );
-            break;
-          }
-        } else {
-          consecutiveTransportFailures = 0;
+    // A small worker pool over the queue. Shared counters are safe — this is one JS
+    // thread; only the awaits interleave. `stop` ends the pool from any worker.
+    let next = 0;
+    let stop = "";
+    // A worker that dies must not leave the others running past the lock's release —
+    // record the error, stop the pool, and rethrow once every worker has returned.
+    let poolError: unknown;
+    const worker = async () => {
+      while (!stop && next < todo.length) {
+        if (Date.now() > deadline) {
+          stop =
+            `[collect] claude: ${BUDGET_MS / 60_000} min budget spent after ${next} session(s) — ` +
+            `the remaining ${todo.length - next} stay pending for the next run`;
+          break;
         }
-        continue;
+        const i = next++;
+        const session = todo[i];
+        const label = `[${String(i + 1).padStart(3)}/${todo.length}] ${session.session_id.slice(0, 8)} ${session.project}`;
+        const startedAt = Date.now();
+        const result = await summarizeSession(session);
+
+        if (!result.ok) {
+          failed++;
+          bar.advance(Date.now() - startedAt, true);
+          runReport.advance(Date.now() - startedAt, true);
+          bar.error(`[collect] claude: ${label} FAILED after ${result.attempts} attempt(s) — ${result.errors[0]}`);
+          if (result.transport) {
+            if (++consecutiveTransportFailures >= MAX_CONSECUTIVE_TRANSPORT_FAILURES && !stop) {
+              stop =
+                `[collect] claude: ${consecutiveTransportFailures} consecutive transport failures — ` +
+                `claude -p looks unwell, stopping. The remaining ` +
+                `${todo.length - next} session(s) stay pending.`;
+            }
+          } else {
+            consecutiveTransportFailures = 0;
+          }
+          continue;
+        }
+        consecutiveTransportFailures = 0;
+
+        // Write the summary, then record the fingerprint it was written from. In that
+        // order: a crash between the two leaves a summary with no ledger entry, which
+        // the mtime check above still recognises. The reverse would leave a ledger
+        // entry promising a file that does not exist.
+        // Both writes are flushed to the disk before the worker moves on. An hour of
+        // summaries sitting in the page cache is an hour of work a power cut takes.
+        writeFileDurable(summaryFile(session.session_id), JSON.stringify(result.summary, null, 2));
+        const entry = {
+          mtime: session.mtime,
+          size: session.size,
+          written_at: new Date().toISOString(),
+        };
+        progress[session.session_id] = entry;
+        recordProgress(session.session_id, entry);
+        remember(result.summary!);
+
+        ok++;
+        batch.push(session.session_id);
+        bar.advance(Date.now() - startedAt);
+        runReport.advance(Date.now() - startedAt);
+        bar.line(
+          `[collect] claude: ${label} ok in ${(result.ms / 1000).toFixed(1)}s ` +
+          `(${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`
+        );
+
+        if (batch.length >= IMPORT_BATCH) {
+          try {
+            await flush("batch");
+          } catch (e) {
+            poolError ??= e;
+            stop ||= `[collect] claude: import failed — ${e}`;
+          }
+        }
       }
-      consecutiveTransportFailures = 0;
-
-      // Write the summary, then record the fingerprint it was written from. In that
-      // order: a crash between the two leaves a summary with no ledger entry, which
-      // the mtime check above still recognises. The reverse would leave a ledger
-      // entry promising a file that does not exist.
-      // Both writes are flushed to the disk before the loop moves on. An hour of
-      // summaries sitting in the page cache is an hour of work a power cut takes.
-      writeFileDurable(summaryFile(session.session_id), JSON.stringify(result.summary, null, 2));
-      const entry = {
-        mtime: session.mtime,
-        size: session.size,
-        written_at: new Date().toISOString(),
-      };
-      progress[session.session_id] = entry;
-      recordProgress(session.session_id, entry);
-      remember(result.summary!);
-
-      ok++;
-      batch.push(session.session_id);
-      bar.advance(Date.now() - startedAt);
-      runReport.advance(Date.now() - startedAt);
-      bar.line(
-        `[collect] claude: ${label} ok in ${(result.ms / 1000).toFixed(1)}s ` +
-        `(${result.attempts} attempt${result.attempts === 1 ? "" : "s"})`
-      );
-
-      if (batch.length >= IMPORT_BATCH) await flush("batch");
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, todo.length) }, worker));
+    if (stop) bar.error(stop);
+    if (poolError) throw poolError;
     // The loop can stop short — time budget spent, model server unwell — and the UI
     // would otherwise sit on "N/M · ~Xh left" through tagging and the final import.
     runReport.finish();
 
-    // Tag while the model is still resident. The pass is the last thing in the run
-    // that needs it, and releasing first would mean paying a cold load again for a
-    // handful of requests.
-    //
     // Generating tags does not need the rows to exist — only APPLYING them does —
     // which is what lets this sit before the final commit and the POST after it.
     if (TAG_IN_RUN && candidates.length) {
@@ -375,10 +375,6 @@ async function collectClaudeLocked(runReport: RunReporter): Promise<number> {
     // Before any other output: the bar owns the current terminal line, and a log
     // line written over it leaves half a bar stranded in the scrollback.
     bar.finish();
-    // Release before the final commit: importing does not need the GPU, and a model
-    // this run loaded holds ~7.9 GiB that nothing else on the box can use meanwhile.
-    // One found already resident is left alone — it is not ours to evict.
-    await release();
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
   }

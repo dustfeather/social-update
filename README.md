@@ -57,7 +57,7 @@ flowchart TB
         WD["social-collect-watchdog.sh<br/>probe ingest canary · run collectors"]
         COL["collect.ts → local summarize loop"]
         SCAN["claude-sessions.js<br/>new/changed transcripts → manifest"]
-        SUB["llama.cpp router :1921<br/>one call per session · no Claude"]
+        SUB["claude -p · Haiku<br/>one call per session · no tools"]
         IMP["claude-import.js<br/>validate + batch insert"]
         TAG["tag-pass.ts<br/>cross-session tag pass<br/>(in-run, CLAUDE_TAG=0 to skip)"]
     end
@@ -115,11 +115,11 @@ flowchart TB
 > Highlighted = a `claude` process runs. Note graphify: the **post-commit hook is AST-only, no
 > LLM** (`graphify update` + `global add`) — Claude is *not* called on commit. The LLM backend
 > (`graphify extract --backend claude-cli`) runs only on the **manual** full ingest. `SRC_CW`
-> Collection is **no longer** a Claude call: it loops over a local model on the llama.cpp
-> router (`LLM_BASE_URL`), so the box needs a GPU rather than a Claude session. The genuine
-> model calls left are the in-pod Opus drafter (`/api/generate`) and the vault-keeper writers
-> (daily/weekly/repo-doc = Opus, inbox = Haiku). The cross-session tag pass runs on the same
-> local model as the summaries, at the end of the same run.
+> Collection summarizes with plain `claude -p` completions on **Haiku** (no tools, no
+> settings, no session persistence — see `src/llm.ts`), several sessions at a time, using
+> the box's logged-in Claude Code. The other model calls are the in-pod Opus drafter
+> (`/api/generate`) and the vault-keeper writers (daily/weekly/repo-doc = Opus, inbox =
+> Haiku). The cross-session tag pass runs on Haiku too, at the end of the same run.
 >
 > **Keeping the graph fresh:** each repo's slice of `global-graph.json` is refreshed on
 > every commit by its AST post-commit hook (`VGH`). The daily `vault-repos` job (`T5`) then
@@ -152,10 +152,12 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 | `CLAUDE_WORK_DIR` | Scratch dir for the manifest, summaries, tags and the state file (default `~/.cache/social-update/claude`). |
 | `CLAUDE_INCLUDE_SDK_SESSIONS` | Set to `1` to also summarize programmatic sessions (`entrypoint` `sdk-py`/`sdk-cli`: a plugin's agent fan-out, a script). Off by default — they journal the tooling, not the work, and on this machine they were 200 of 328 in-window transcripts. Task-tool sub-agents need no setting: they write no transcript of their own and are summarized inside their parent session. Sessions started by the claudeception Stop hook are dropped whatever this is set to — they are recognised by their opening prompt, so they stay out even when programmatic sessions are let back in. |
 | `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
-| `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model — summarizing is local. |
+| `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model. |
+| `CLAUDE_CONCURRENCY` | Sessions summarized at once (default 4), each its own `claude -p` call. |
+| `LLM_MODEL` | Summarizer/tagger model passed to `claude -p --model` (default `haiku`). |
+| `CLAUDE_BIN` | Path to the `claude` CLI (default `~/.local/bin/claude`). |
 | `CLAUDE_TAG` | Set to `0` to skip the in-run tagging pass. Items then land with `tags` NULL and `npm run collect:tag` applies a tag file by hand. |
 | `CLAUDE_TAG_BATCH` | Sessions per tagging request (default 25). The pass is chunked; each chunk is shown the tags the earlier ones used. |
-| `CLAUDE_TAG_MAX_TOKENS` | Completion budget for one tagging request (default 2000). Separate from `LLM_MAX_TOKENS` so raising it for the pass does not pay for a bigger budget on every session of the loop. |
 | `VAULT_PATH` | Obsidian vault root — used by the vault-keeper scripts, not by collection. `~` and `$HOME` are expanded; quote paths with spaces. |
 | `INGEST_URL` | Cluster base URL. Set → POST to `/api/ingest`; unset → write a local SQLite file. |
 | `PORT` | Web server port. |
@@ -171,7 +173,7 @@ npm start                            # serve API + web UI at http://localhost:$P
 **Prefer the watchdog over `npm run collect` for a real run.** It is the same entry
 point `social-collect.service` uses, so a run that works by hand works on the timer.
 Before starting the collector it probes the two things whose absence is otherwise
-invisible — the llama.cpp router and `$INGEST_URL/api/health` — and afterwards it
+invisible — a `claude -p` probe and `$INGEST_URL/api/health` — and afterwards it
 turns a per-source failure into a nonzero exit, because `collect.ts` catches those
 and would otherwise exit 0 having written nothing. A run with no new sessions and a
 run against a dead router look identical in the log without it.
@@ -297,17 +299,17 @@ journalctl --user -t social-collect -n 30            # run logs
 
 `npm run collect` does not parse anything itself, and it no longer spends Claude on this.
 It scans for session transcripts that are new or have grown since the last successful import,
-writes a manifest, and then walks them one at a time against a **local** model:
+writes a manifest, and then walks them, `CLAUDE_CONCURRENCY` at a time, through Haiku:
 
 1. **Excerpt** — `src/excerpt.ts` renders each transcript deterministically: `attachment`
    lines, `thinking` blocks and sub-agent sidechains dropped, tool calls kept as one line
    each, and a 24k-character budget spent tail-first, because the last turns are what was
    concluded and the first are only what was asked. The same transcript always yields the
    same bytes, so a bad summary is reproducible.
-2. **Summarize** — `src/summarize.ts` sends it to the llama.cpp router from the `ollama-k3s`
-   repo (`LLM_BASE_URL`, default `http://127.0.0.1:1921/v1`). The collector loads the model
-   before the first session and unloads it after the last — but only if *it* loaded it; a
-   model found already resident belongs to whoever loaded it and is left alone.
+2. **Summarize** — `src/summarize.ts` sends it to `claude -p --model haiku` (`src/llm.ts`),
+   stripped to a bare completion: `--tools ""`, `--setting-sources ""`,
+   `--strict-mcp-config`, and `--no-session-persistence` so the call leaves no transcript
+   for the next collection to pick up. ~5s a session.
 3. **Self-correct** — the reply is checked with the real `validateSummary`, and a rejected
    one goes back to the model with the validator's own errors as a correction turn, up to
    `LLM_ATTEMPTS` times. Measured 100% valid on the first attempt over a stratified
@@ -315,8 +317,7 @@ writes a manifest, and then walks them one at a time against a **local** model:
 4. **Import in batches** — every `CLAUDE_IMPORT_BATCH` summaries (default 10) are written to
    the DB and their state entries advanced. A session whose summary is missing or invalid
    keeps its state entry and comes back on the next run; nothing is silently lost.
-5. **Tag** — `src/tag-pass.ts`, one pass over everything the run summarized, while the model
-   is still resident. Tagging is a judgement call **across** sessions — a tag is only useful
+5. **Tag** — `src/tag-pass.ts`, one pass over everything the run summarized, . Tagging is a judgement call **across** sessions — a tag is only useful
    if two sessions about the same thing get the same one — so it is never a per-session call.
    A backlog does not fit in one context, so the pass is chunked (`CLAUDE_TAG_BATCH`) and each
    chunk is shown the tags the earlier chunks actually used, ranked by frequency, and told to

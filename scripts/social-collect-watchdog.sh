@@ -17,19 +17,19 @@ export NVM_DIR="$HOME/.nvm"
 
 cd "$HOME/projects/social-update" || { echo "ERROR: project dir missing"; exit 1; }
 
-# Collection loops over a LOCAL model, one call per new or changed session
-# transcript (see src/claude.ts). It no longer shells out to the `claude` CLI, so
-# the precondition is the llama.cpp router being reachable — not a Claude session.
-# No browser, no display, no debug port. A run with no new sessions exits clean
-# having written nothing.
+# Collection summarizes each new or changed session with `claude -p` on Haiku (see
+# src/llm.ts), using this box's logged-in Claude Code — no API key, no GPU.
 #
-# Checked, not assumed: without the router every session fails one after another
-# and the run still exits 0 having written nothing, which is indistinguishable
-# from "no new sessions" in the log.
-LLM_BASE_URL="${LLM_BASE_URL:-http://127.0.0.1:1921/v1}"
-LLM_ROUTER="${LLM_BASE_URL%/v1}"
-curl -fsS --max-time 10 -o /dev/null "$LLM_ROUTER/models" || {
-  echo "ERROR: llama.cpp router unreachable at $LLM_ROUTER — collection cannot run"; exit 1; }
+# Checked, not assumed: without a working CLI every session fails one after another
+# and the run exits having written nothing, which reads in the log much like "no new
+# sessions". A one-token call proves the binary, the login and the model together.
+CLAUDE_BIN="${CLAUDE_BIN:-$HOME/.local/bin/claude}"
+# Bounded, and with the env src/llm.ts gives its calls (no CLAUDE_CODE_PLUGIN_DIRS).
+probe="$(printf 'Reply with exactly: OK' | timeout 120 env -u CLAUDE_CODE_PLUGIN_DIRS "$CLAUDE_BIN" -p --model "${LLM_MODEL:-haiku}" \
+  --output-format json --tools "" --setting-sources "" --strict-mcp-config \
+  --no-session-persistence 2>&1)"
+printf '%s' "$probe" | grep -q '"is_error":false' || {
+  echo "ERROR: claude -p probe failed — collection cannot run: $(printf '%s' "$probe" | head -c 300)"; exit 1; }
 
 # INGEST_URL only — parsed directly (don't `source` .env: it has quoted paths with spaces).
 INGEST="$(grep -E '^INGEST_URL=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")"

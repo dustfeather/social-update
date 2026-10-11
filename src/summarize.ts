@@ -14,8 +14,8 @@ import type { SessionRef } from "./claude-sessions";
 const MAX_ATTEMPTS = Number(process.env.LLM_ATTEMPTS ?? 3);
 // Transport failures get their own, separate budget. They are not something the
 // model can correct, so they do not consume a validation attempt — but they are
-// often transient (a server still warming, a slot briefly occupied), and failing a
-// session on the first one throws away a minute of GPU time for nothing.
+// often transient (a rate limit, a dropped connection), and failing a session on
+// the first one throws away the run's work on it for nothing.
 const TRANSPORT_RETRIES = Number(process.env.LLM_TRANSPORT_RETRIES ?? 2);
 
 export const SYSTEM = `You summarize one Claude Code coding session into a single JSON object.

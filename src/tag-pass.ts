@@ -17,14 +17,11 @@ import { validateTags, MAX_TAGS, TAG_MAX_LEN } from "./tags";
 // inventing anything. Ranked by frequency, so the tags that already cover the run
 // are the ones it sees first.
 
-// Sessions per request. Small enough that the reply fits TAG_MAX_TOKENS with room
-// to spare — a truncated reply costs a whole correction turn — and large enough
+// Sessions per request. Small enough that a reply stays short and easy to validate
+// — a bad reply costs a whole correction turn — and large enough
 // that the model is choosing tags with the run in front of it rather than one
 // session at a time, which is the entire point of the pass.
 const CHUNK = Number(process.env.CLAUDE_TAG_BATCH ?? 25);
-// The reply is one short array per session, so it needs a different budget than a
-// six-field summary. Left separate from LLM_MAX_TOKENS for that reason.
-const TAG_MAX_TOKENS = Number(process.env.CLAUDE_TAG_MAX_TOKENS ?? 2000);
 const VOCAB_SHOWN = Number(process.env.CLAUDE_TAG_VOCAB ?? 40);
 const MAX_ATTEMPTS = Number(process.env.LLM_ATTEMPTS ?? 3);
 const TRANSPORT_RETRIES = Number(process.env.LLM_TRANSPORT_RETRIES ?? 2);
@@ -207,7 +204,7 @@ export async function assignTags(
       let transportError = "";
       for (let t = 0; t <= TRANSPORT_RETRIES; t++) {
         try {
-          reply = await chat(messages, { maxTokens: TAG_MAX_TOKENS });
+          reply = await chat(messages);
           break;
         } catch (e) {
           transportError = String(e).slice(0, 300);
@@ -235,8 +232,8 @@ export async function assignTags(
       Object.assign(tags, assigned);
       log(`[collect] claude: tagged ${ids.length} session(s) (chunk ${i + 1}/${chunks.length})`);
       if (onChunk) {
-        // Commit this chunk before starting the next one. A long pass is minutes
-        // of GPU per chunk, and one that only persisted at the end threw all of
+        // Commit this chunk before starting the next one. A long pass is many
+        // model calls, and one that only persisted at the end threw all of
         // it away when the process was killed partway.
         try {
           await onChunk(assigned);

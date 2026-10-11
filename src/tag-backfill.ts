@@ -3,7 +3,7 @@ import { config } from "dotenv";
 import { fetchUntagged } from "./untagged";
 import { assignTags } from "./tag-pass";
 import { applyTags } from "./sink";
-import { loadModel, unloadModel, LLM_MODEL } from "./llm";
+import { LLM_MODEL } from "./llm";
 import { acquireLock, releaseLock } from "./claude";
 import { replaceFileDurable } from "./durable";
 import { WORK_DIR } from "./claude-sessions";
@@ -22,7 +22,7 @@ config({ quiet: true });
 // separate invocations would produce eight vocabularies.
 //
 // Progress is committed chunk by chunk, not once at the end: a pass over a
-// backlog is minutes of GPU per chunk, and one that only wrote after the last
+// backlog is many model calls, and one that only wrote after the last
 // chunk threw all of it away when the process was killed partway. A run
 // interrupted now keeps every chunk that finished, and the rows it already
 // tagged are no longer NULL, so a re-run picks up where it stopped.
@@ -42,12 +42,10 @@ const SOURCE = flag("--source") ?? "claude";
 // built from that week rather than from the whole backlog.
 const WEEK = flag("--week");
 
-// Under the collector's lock, not beside it. A backfill is a second GPU job of exactly
-// the kind that lock exists to keep off the card: both drive the same llama-server, so
-// a nightly collection landing on top of a manual backfill halves the throughput of
-// each and pushes both toward the request timeout. It also gives the poller one honest
-// thing to test — "is a run in progress" — where "the model is loaded" says nothing,
-// since the model is loaded precisely BECAUSE another job is mid-run.
+// Under the collector's lock, not beside it: a collection's in-run tagging pass and a
+// manual backfill landing together would each build their own vocabulary and POST
+// over each other's tags. It also gives the poller one honest thing to test — "is a
+// run in progress".
 async function main(): Promise<number> {
   if (!acquireLock()) return 0;
   try {
@@ -87,20 +85,11 @@ async function backfill(): Promise<number> {
     if (!DRY) console.log(`[backfill] committed ${updated}/${Object.keys(done).length} tagged item(s) so far`);
   };
 
-  let loadedByUs = false;
-  let result;
-  try {
-    loadedByUs = await loadModel();
-    result = await assignTags(
-      candidates,
-      (line) => console.log(line.replace("[collect] claude:", "[backfill]")),
-      commit
-    );
-  } finally {
-    // Release as soon as the pass is over: writing tags does not need the GPU,
-    // and the child holds ~7.9 GiB that nothing else on the box can use meanwhile.
-    await unloadModel(loadedByUs);
-  }
+  const result = await assignTags(
+    candidates,
+    (line) => console.log(line.replace("[collect] claude:", "[backfill]")),
+    commit
+  );
 
   const asked = Object.keys(result.tags).length;
 
