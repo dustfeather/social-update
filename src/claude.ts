@@ -129,9 +129,12 @@ const IMPORT_BATCH = Number(process.env.CLAUDE_IMPORT_BATCH ?? 10);
 // nothing.
 const MAX_CONSECUTIVE_TRANSPORT_FAILURES = Number(process.env.CLAUDE_MAX_TRANSPORT_FAILURES ?? 5);
 
-// Sessions summarized at once. Each is an independent `claude -p` call; the work on
-// this box is only spawning the CLI and reading the transcript.
-const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.CLAUDE_CONCURRENCY ?? 4)) || 4);
+// Sessions summarized at once. Haiku is not the ceiling — the CLI is: every call boots
+// its own Node `claude`, ~2s of CPU and ~280 MB RSS before the request goes out.
+// Measured 2026-10-11 on the 8-core box: 8/16/32 parallel calls gave 2.1/2.2/2.4 calls/s,
+// so CPU saturates near 8 and more workers only queue on it. A real session spends more
+// of its ~4.5s on the API, which buys room above 8; 12 keeps 2 cores for the OS.
+const CONCURRENCY = Math.max(1, Math.floor(Number(process.env.CLAUDE_CONCURRENCY ?? 12)) || 12);
 
 // Tagging in-run, off with CLAUDE_TAG=0. The escape hatch exists because the pass
 // is the one part of a collection that spends the model on something other than

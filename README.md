@@ -153,7 +153,7 @@ npm run build:all         # compiles backend (tsc) + builds web/ (vite)
 | `CLAUDE_INCLUDE_SDK_SESSIONS` | Set to `1` to also summarize programmatic sessions (`entrypoint` `sdk-py`/`sdk-cli`: a plugin's agent fan-out, a script). Off by default — they journal the tooling, not the work, and on this machine they were 200 of 328 in-window transcripts. Task-tool sub-agents need no setting: they write no transcript of their own and are summarized inside their parent session. Sessions started by the claudeception Stop hook are dropped whatever this is set to — they are recognised by their opening prompt, so they stay out even when programmatic sessions are let back in. |
 | `CLAUDE_LOOKBACK_DAYS` | Sessions older than this are never summarized (default 14). The only brake on fan-out width — a first run with an empty state file summarizes everything inside the window. |
 | `CLAUDE_COLLECT_BUDGET_MIN` | Wall-clock ceiling on one run (default 120). At the limit the run commits what it finished and exits 0; the next run resumes. The `CLAUDE_` prefix here scopes the claude-sessions source, not the model. |
-| `CLAUDE_CONCURRENCY` | Sessions summarized at once (default 4), each its own `claude -p` call. |
+| `CLAUDE_CONCURRENCY` | Sessions summarized at once (default 12), each its own `claude -p` call. Bounded by local CPU, not Haiku: every call boots a Node CLI (~2s CPU), and the 8-core box saturates around there. |
 | `LLM_MODEL` | Summarizer/tagger model passed to `claude -p --model` (default `haiku`). |
 | `CLAUDE_BIN` | Path to the `claude` CLI (default `~/.local/bin/claude`). |
 | `CLAUDE_TAG` | Set to `0` to skip the in-run tagging pass. Items then land with `tags` NULL and `npm run collect:tag` applies a tag file by hand. |
