@@ -1,5 +1,5 @@
 # In-cluster Service for the app. External access is via the nginx-tls-proxy's
-# hostPort 443 on acer-laptop (tls-proxy.yaml), which proxies here over HTTP.
+# edge-proxy (k3s-cluster), which proxies here over HTTP. tls-proxy.yaml is not applied.
 apiVersion: v1
 kind: Service
 metadata:

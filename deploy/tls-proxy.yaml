@@ -75,7 +75,7 @@ spec:
       labels: { app: nginx-tls-proxy }
     spec:
       nodeSelector:
-        kubernetes.io/hostname: acer-laptop
+        kubernetes.io/hostname: wsl
       containers:
         - name: nginx
           image: nginx:1.27-alpine

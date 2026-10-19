@@ -19,7 +19,7 @@ spec:
     spec:
       # Pin to the node that holds the local-path PVC (and the tls-proxy).
       nodeSelector:
-        kubernetes.io/hostname: acer-laptop
+        kubernetes.io/hostname: wsl
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

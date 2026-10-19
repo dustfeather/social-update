@@ -80,8 +80,8 @@ jobs:
       # Deployment was deleted then. It stayed in this list, and because the repo
       # had not deployed since 2026-06-21, the first run after that deletion
       # resurrected it as a pod that can never schedule -- edge-proxy owns
-      # hostPort 443 on acer-laptop, and the only other node carries an
-      # untolerated taint.
+      # hostPort 443 on the node (acer-laptop then; wsl, the only node, since
+      # 2026-10-19).
       #
       # That zombie is not inert: it is a permanently queued claimant on :443.
       # edge-proxy is strategy: Recreate, so on its next roll the port frees for
