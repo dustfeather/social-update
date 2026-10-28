@@ -33,7 +33,10 @@ function runClaude(input: string, extraArgs: string[] = []): Promise<string> {
     child.on("close", (code) => {
       if (code !== 0) return reject(new Error(`claude exited ${code}: ${err.trim()}`));
       try {
-        const env = JSON.parse(out);
+        // With `verbose` on in the CLI's settings the envelope is the whole message
+        // array rather than the bare result object; the result is its last entry.
+        const parsed = JSON.parse(out);
+        const env = Array.isArray(parsed) ? parsed.find((m) => m.type === "result") ?? {} : parsed;
         if (env.is_error) return reject(new Error(`claude error: ${env.result ?? env.subtype}`));
         if (typeof env.result !== "string") return reject(new Error("claude envelope missing string .result"));
         resolve(env.result);
