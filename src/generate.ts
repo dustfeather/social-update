@@ -6,6 +6,10 @@ import { getWeekItems, saveDraft } from "./db";
 const PROMPT_PATH = path.join(__dirname, "..", "prompt.txt");
 const HUMANIZE_PROMPT_PATH = path.join(__dirname, "..", "humanize-prompt.txt");
 const ITEM_BODY_CAP = 500; // keep each item compact so the prompt stays bounded
+// Pinned so drafts don't follow whatever the CLI's default model is for the pod's
+// OAuth account. A family alias, not a version: it tracks the current Sonnet.
+const DRAFT_MODEL = process.env.DRAFT_MODEL ?? "sonnet";
+const DRAFT_EFFORT = process.env.DRAFT_EFFORT ?? "medium";
 
 export interface Draft {
   angle: string;
@@ -17,7 +21,8 @@ export interface Draft {
 // Pipe the assembled prompt to the local claude CLI and return the raw .result string.
 function runClaude(input: string, extraArgs: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn("claude", ["-p", "--output-format", "json", ...extraArgs], {
+    const args = ["-p", "--output-format", "json", "--model", DRAFT_MODEL, "--effort", DRAFT_EFFORT];
+    const child = spawn("claude", [...args, ...extraArgs], {
       stdio: ["pipe", "pipe", "pipe"],
     });
     let out = "";
