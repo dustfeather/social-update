@@ -35,7 +35,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 # Claude Code CLI — the Generate endpoint spawns `claude -p --output-format json`.
-# Auth is non-interactive via CLAUDE_CODE_OAUTH_TOKEN (injected from a k8s Secret).
+# Auth is non-interactive via ANTHROPIC_API_KEY (injected from a k8s Secret).
 RUN npm install -g @anthropic-ai/claude-code
 
 WORKDIR /app

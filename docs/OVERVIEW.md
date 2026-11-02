@@ -16,8 +16,8 @@ automations that distill activity back into the Obsidian vault.
 - **Playwright** + **Chrome DevTools Protocol** for the `claude-web` collector
   (attaches to a real logged-in Chrome — Cloudflare Turnstile blocks automated
   browsers).
-- **claude CLI** in-cluster for draft generation (`--model opus`, auth via
-  `CLAUDE_CODE_OAUTH_TOKEN`); vault-keeper writers use Opus (daily/weekly) and
+- **claude CLI** in-cluster for draft generation (`--model sonnet`, auth via
+  `ANTHROPIC_API_KEY`); vault-keeper writers use Opus (daily/weekly) and
   Haiku (inbox sorter).
 
 ## Repo

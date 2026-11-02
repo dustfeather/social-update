@@ -29,7 +29,7 @@ finds to the cluster over the WARP network:
   session that grows gets a fresh summary. With `INGEST_URL` set it POSTs to `/api/ingest`;
   unset, it writes a local DB (dev).
 - **Generate** sends a week's items + your manual notes + `prompt.txt` to the `claude` CLI
-  running **in the cluster pod** (auth via `CLAUDE_CODE_OAUTH_TOKEN`), which returns a JSON
+  running **in the cluster pod** (auth via `ANTHROPIC_API_KEY`), which returns a JSON
   array of drafts. Each generation is saved to `drafts`.
 
 ### Flow: collectors, Obsidian, and where Claude fires
@@ -67,7 +67,7 @@ flowchart TB
         DB[("SQLite /data PVC")]
         UI["web UI"]
         GEN["POST /api/generate"]
-        CLI["in-pod claude CLI<br/>--model opus (OAUTH)"]
+        CLI["in-pod claude CLI<br/>--model sonnet (API key)"]
         DRAFTS["drafts table → copy/paste (manual)"]
     end
 
@@ -411,7 +411,7 @@ kubectl get secret github-app-dustfeather -n arc-runners -o yaml \
   | kubectl apply -n social-update -f -
 
 # 4. Actions secret for in-pod generation.
-gh secret set CLAUDE_CODE_OAUTH_TOKEN -R dustfeather/social-update
+gh secret set ANTHROPIC_API_KEY -R dustfeather/social-update
 
 # 5. Cloudflare DNS-only A record: social.itguys.ro -> 100.96.0.4 (proxied=false).
 ```

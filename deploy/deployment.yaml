@@ -39,12 +39,12 @@ spec:
           env:
             - { name: PORT, value: "4000" }
             - { name: DB_PATH, value: "/data/social.sqlite" }
-            # Non-interactive Claude auth for the Generate endpoint.
-            - name: CLAUDE_CODE_OAUTH_TOKEN
+            # Non-interactive Claude auth for the Generate endpoint (metered API key).
+            - name: ANTHROPIC_API_KEY
               valueFrom:
                 secretKeyRef:
                   name: social-update-secrets
-                  key: CLAUDE_CODE_OAUTH_TOKEN
+                  key: ANTHROPIC_API_KEY
           resources:
             requests: { cpu: "50m", memory: "128Mi" }
             limits:   { cpu: "1", memory: "1Gi" }

@@ -112,4 +112,4 @@ jobs:
     # deploy-k8s.yml parses this line-by-line, one KEY=VALUE per line.
     secrets:
       SECRET_LITERALS: |
-        CLAUDE_CODE_OAUTH_TOKEN=${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}

@@ -46,7 +46,7 @@ roleRef:
   name: social-update-ci-namespace-reader
 ---
 # Namespaced writes deploy.yml performs in social-update:
-#   secrets                -> social-update-secrets (CLAUDE_CODE_OAUTH_TOKEN)
+#   secrets                -> social-update-secrets (ANTHROPIC_API_KEY)
 #   configmaps             -> nginx-tls-proxy
 #   services               -> social-update
 #   persistentvolumeclaims -> social-update-data
