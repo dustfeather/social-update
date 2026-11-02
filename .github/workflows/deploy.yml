@@ -113,3 +113,4 @@ jobs:
     secrets:
       SECRET_LITERALS: |
         ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+        ANTHROPIC_CUSTOM_HEADERS=anthropic-workspace-id: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}

@@ -45,6 +45,12 @@ spec:
                 secretKeyRef:
                   name: social-update-secrets
                   key: ANTHROPIC_API_KEY
+            # The key is not workspace-scoped; the API refuses it without this header.
+            - name: ANTHROPIC_CUSTOM_HEADERS
+              valueFrom:
+                secretKeyRef:
+                  name: social-update-secrets
+                  key: ANTHROPIC_CUSTOM_HEADERS
           resources:
             requests: { cpu: "50m", memory: "128Mi" }
             limits:   { cpu: "1", memory: "1Gi" }
