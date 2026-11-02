@@ -81,4 +81,5 @@ jobs:
     uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v9
     with:
       runner: arc-df-social-update
-    secrets: inherit
+    secrets:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
