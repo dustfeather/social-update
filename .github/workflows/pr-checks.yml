@@ -3,7 +3,7 @@ on:
   pull_request:
     # `closed` is in this list to cancel this workflow's own in-flight run when
     # the PR merges. A merge fires no `synchronize`, so without it nothing ever
-    # re-enters the concurrency group below, and the review job keeps a
+    # re-enters the concurrency group below, and a running job keeps a
     # runner busy on a commit that is already history. Every job is
     # gated off `closed`, so the run this creates does no work: it exists only
     # to claim the group and cancel its predecessor.
@@ -12,7 +12,7 @@ on:
 
 # Supersede an in-flight run when the PR is pushed to again, and — through
 # the `closed` trigger above — when it merges. This repo had no concurrency
-# group at all, so a merged PR's review job went on holding the single
+# group at all, so a merged PR's jobs went on holding the single
 # runner this repo's pool had, while the next job queued behind it.
 concurrency:
   group: pr-checks-${{ github.ref }}
@@ -67,20 +67,3 @@ jobs:
       runner: arc-df-social-update
       push: false
 
-  review:
-    # Human PRs are reviewed locally with the /code-review plugin, not in CI.
-    # What stays here is the Dependabot track, which ends on an approve/request-
-    # changes and so feeds dependabot-auto-merge.yml / merge-on-approval.yml.
-    if: github.event.action != 'closed' && github.event.pull_request.user.login == 'dependabot[bot]'
-    needs: [tests, web]
-    permissions:
-      contents: read
-      pull-requests: write
-      issues: read
-      id-token: write
-    uses: dustfeather/shared-workflows/.github/workflows/claude-code-review.yml@v9
-    with:
-      runner: arc-df-social-update
-    secrets:
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      ANTHROPIC_WORKSPACE_ID: ${{ secrets.ANTHROPIC_WORKSPACE_ID }}
