@@ -22,7 +22,7 @@ jobs:
   tests:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v9
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v10
     with:
       runner: arc-df-social-update
       node-version: "26"
@@ -33,7 +33,7 @@ jobs:
   web:
     # Skipped on `closed` — see the `types:` note above.
     if: github.event.action != 'closed'
-    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v9
+    uses: dustfeather/shared-workflows/.github/workflows/node-test.yml@v10
     with:
       runner: arc-df-social-update
       node-version: "26"
@@ -62,7 +62,7 @@ jobs:
     permissions:
       contents: read
       packages: write
-    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v9
+    uses: dustfeather/shared-workflows/.github/workflows/build-push-image.yml@v10
     with:
       runner: arc-df-social-update
       push: false
