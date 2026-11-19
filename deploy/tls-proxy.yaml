@@ -78,7 +78,7 @@ spec:
         kubernetes.io/hostname: wsl
       containers:
         - name: nginx
-          image: nginx:1.27-alpine
+          image: nginx:1.30.7-alpine   # >=1.30.7: CVE-2026-123007 (NGINX2Root)
           # nginx as PID 1, plus a watcher that reloads when cert-manager rotates
           # social-tls in-place (~every 60d) so the pod doesn't serve a stale cert.
           command:
