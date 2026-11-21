@@ -2,11 +2,11 @@
 // graphify-watch — repo-scope driver for graphify-bridge (the vault side is the
 // vault-repos TIMER).
 //
-// Why split the driver by scope: the Obsidian vault lives on /mnt/c, where Linux
-// file watchers don't work (no inotify over the 9p mount) — so vault changes are
-// picked up by the vault-repos systemd TIMER. Code repos live on the Linux fs,
-// where watching DOES work, so this long-running service re-bridges within
-// seconds of any repo commit instead of waiting for the daily timer.
+// Why split the driver by scope: vault changes are picked up by the vault-repos
+// systemd TIMER (the vault was on a 9p /mnt/c mount with no inotify until
+// 2026-11-21; it is now a local dir, so it could be watched too). Code repos are
+// watched here, so this long-running service re-bridges within seconds of any
+// repo commit instead of waiting for the daily timer.
 //
 // What we watch: each repo's post-commit hook runs
 //   graphify update . && graphify global add graphify-out/graph.json --as <tag>
@@ -96,7 +96,7 @@ function scanNewProjects() {
   const known = globalTags();
   const now = Date.now();
   for (const p of listProjects()) {
-    if (p.tag === "vault") continue;                 // vault = the timer's job (/mnt/c, no inotify)
+    if (p.tag === "vault") continue;                 // vault = the vault-repos timer's job
     if (known.has(p.tag) || inFlight.has(p.tag)) continue;
     if (lastTry.has(p.tag) && now - lastTry.get(p.tag) < COOLDOWN) continue; // backoff on repeats
     lastTry.set(p.tag, now);

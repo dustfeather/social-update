@@ -27,9 +27,8 @@ Plus: the same job **sorts the `_Inbox`** into Projects / Notes / Resources.
 
 ## 2. Environment facts (verified 2026-06-25)
 
-- **Vault path**: `~/obsidian.md` → symlink → `/mnt/c/Users/Catalin Teodorescu/OneDrive/Documents/Obsidian Vault`.
-- **Filesystem**: `/mnt/c` is **9p** (WSL2 ↔ Windows). **No inotify** on 9p — neither Windows-side nor Linux-side changes fire events. Any "watch" must **poll**.
-- **Sync layers**: OneDrive (**being deprecated** — unreliable on mobile), **Syncthing** (`syncthing@dustfeather.service`, active; folder `Obsidian Vault`, `rescanIntervalS=60`, also polling since 9p gives it no inotify), and **git** (`origin git@github.com:dustfeather/obsidian-sync.git`).
+- **Vault path**: `~/obsidian.md` → symlink → `~/projects/obsidian-sync` (local ext4 on the Kubuntu box since 2026-11-21; inotify works).
+- **Sync layers**: **Syncthing** (folder `Obsidian Vault`; not installed on the Kubuntu box yet) and **git** (`origin git@github.com:dustfeather/obsidian-sync.git`).
 - **Git role going forward = backup only.** Syncthing is the sync layer. Bot writes **plain files**; git is a periodic backup snapshot, NOT the write path.
 - **Vault is a git repo** with `core.hooksPath = "99 System/Hooks"` (a pre-commit Mermaid note-graph generator — **to be dropped**, see §6). `.gitignore`: `.stfolder/ .trash/ .gh-sync/`.
 - **15 git repos** in `~/projects`. The canonical repo→GitHub→note map already exists as the **`Local Repos`** vault note (handles `flotila`→`fleet-manager`, nested `browser-extensions/*`, `TE/no7`=no-git/secrets, ITGuys-RO vs dustfeather owners).
@@ -56,7 +55,7 @@ _Inbox   Daily Notes   Projects   Resources   Notes   System
 ## 4. Components
 
 ### 4.1 Inbox sorter — always-on service
-- `systemd --user` **service**, **30s poll** of `_Inbox` (9p = no inotify), **drain-on-start**.
+- `systemd --user` **service**, **30s poll** of `_Inbox`, **drain-on-start**.
 - Model: **Haiku 4.5**.
 - Per `.md`: classify → **Project / Resource / Note / Task-log / leave-if-unsure**.
 - Action: **move** to destination; delete original **only on confident** classification; leave in `_Inbox` if unsure. **Light-touch** rewrite — add frontmatter + clean title, **body verbatim** (no lossy summarize).
@@ -109,7 +108,7 @@ Scripts: `scripts/install-vault-graphify.sh` (setup) + `scripts/vault-graphify.s
   `graphify-out/` (git-excluded via `.git/info/exclude`, not the tracked `.gitignore`).
 - **Scope**: 15 git repos under `~/projects` + the vault. Vault graph output goes to
   `~/.graphify/vaultgraph/` (NOT into the synced vault — keeps graph internals out of
-  Syncthing/OneDrive, spec §8).
+  Syncthing, spec §8).
 - **Freshness**: `graphify hook install` per repo = a **post-commit** rebuild hook
   (`.git/hooks`, AST-only, no LLM). Worker installs it for every git repo.
 - Idempotent: graphify's SHA256 cache (`graphify-out/cache/`) reprocesses only changed

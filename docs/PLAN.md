@@ -28,7 +28,7 @@ generation run in-cluster (`social.itguys.ro`, WARP-only); collectors stay local
 
 | Key | Value / note |
 |-----|--------------|
-| `VAULT_PATH` | `~/obsidian.md` (symlink → `/mnt/c/Users/Catalin Teodorescu/OneDrive/Documents/Obsidian Vault`). Path has spaces → quote everywhere. OneDrive may touch mtimes + cloud-only placeholder files may read empty. |
+| `VAULT_PATH` | `~/obsidian.md` (symlink → `~/projects/obsidian-sync`). |
 | `CLAUDE_PROJECTS` | `~/.claude/projects` |
 | `GITHUB_USER` | `dustfeather` |
 | `PORT` | web server port |
@@ -60,8 +60,8 @@ One `collect` entry point runs all three. Each maps source records → `items` r
 1. **GitHub** — `gh api /users/dustfeather/events --paginate` (reuses gh auth → includes
    private events). `external_id` = event id, `occurred_at` = event `created_at`.
    Captures commits, PRs, releases, new repos.
-2. **Obsidian** — walk `VAULT_PATH` for `*.md`. `external_id` = `path + contentHash`
-   (dedup robust to OneDrive mtime drift). `occurred_at` = file mtime. Read-only on vault.
+2. **Obsidian** — walk `VAULT_PATH` for `*.md`. `external_id` = `path + contentHash`.
+   `occurred_at` = file mtime. Read-only on vault.
    Handle cloud-only placeholder files that read empty.
 3. **Claude Code** — parse `~/.claude/projects/*/*.jsonl`, extract first user prompt per
    recently-modified session as a topic line. All projects, no exclusion.
@@ -125,6 +125,5 @@ Fires even with no WSL shell open. No in-WSL cron/systemd. Documented in README 
 ## Open risk flags
 
 - `claude -p --output-format json` envelope shape needs a live verify before slice 6.
-- OneDrive cloud-only placeholder files may read empty — handle in Obsidian collector.
 - `gh` must stay authenticated (confirmed).
 - `~/.claude/projects/*.jsonl` schema drifts — defensive parsing in Claude collector.

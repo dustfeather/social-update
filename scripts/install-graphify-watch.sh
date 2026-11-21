@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Install graphify-watch as a WSL `systemd --user` service — the repo-scope driver
+# Install graphify-watch as a `systemd --user` service — the repo-scope driver
 # for graphify-bridge. Watches ~/.graphify/global-graph.json (refreshed by every
 # repo's post-commit hook) and re-bridges on change. The VAULT side is the separate
-# vault-repos timer (see install-vault-repos.sh); the vault is on /mnt/c and can't
-# be watched. Idempotent. Safe to start immediately (no LLM, read-only inputs).
+# vault-repos timer (see install-vault-repos.sh). Idempotent. Safe to start immediately (no LLM, read-only inputs).
 #   Run from the repo root: scripts/install-graphify-watch.sh
 set -euo pipefail
 
