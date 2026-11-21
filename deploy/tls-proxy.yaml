@@ -75,7 +75,7 @@ spec:
       labels: { app: nginx-tls-proxy }
     spec:
       nodeSelector:
-        kubernetes.io/hostname: wsl
+        kubernetes.io/hostname: dustypc
       containers:
         - name: nginx
           image: nginx:1.30.7-alpine   # >=1.30.7: CVE-2026-123007 (NGINX2Root)
